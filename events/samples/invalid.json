@@ -1,0 +1,371 @@
+{
+  "$comment": "Events that MUST be rejected. A schema that accepts everything is worthless, so the test suite proves the negative as well as the positive: every case here is asserted to fail validation against the named schema, and the test fails if any of them passes. `expect_error_at` is the JSON Pointer the validator is expected to flag; it is checked so that a case cannot pass for the wrong reason.",
+
+  "cases": [
+    {
+      "name": "missing-event-id",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "event_id is the deduplication key. An event without one cannot be deduplicated and must never enter the system.",
+      "expect_error_at": "",
+      "event": {
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "unknown-envelope-field",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "The envelope is closed. A producer that invents a top-level field is expressing something no consumer agreed to read, and silently accepting it lets the contract drift.",
+      "expect_error_at": "",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "tenant_id": "acme",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "wrong-event-type-for-schema",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "Each schema pins event_type with a const. This is what stops a consumer validating an OrderConfirmed against the OrderPlaced schema and concluding all is well.",
+      "expect_error_at": "/event_type",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderConfirmed",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "negative-money",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "Money is non-negative and direction is carried by the event type. A negative amount would let a refund masquerade as a capture.",
+      "expect_error_at": "/data/total_amount/amount_minor",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": -1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "fractional-money",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "Minor units are integers. A fractional value means someone is doing float arithmetic on money somewhere upstream, which is the bug this representation exists to prevent.",
+      "expect_error_at": "/data/total_amount/amount_minor",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250.5, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "lowercase-currency",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "ISO 4217 codes are uppercase. Accepting 'gbp' and 'GBP' as different strings would break every equality check on currency.",
+      "expect_error_at": "/data/total_amount/currency",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250, "currency": "gbp" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "zero-quantity-line",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "A line for zero units is meaningless and would make inventory reserve nothing while the order still expects something.",
+      "expect_error_at": "/data/lines/0/quantity",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 0, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 0, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "empty-lines",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "An order for nothing is not an order.",
+      "expect_error_at": "/data/lines",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [],
+          "total_amount": { "amount_minor": 0, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "malformed-uuid",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "Ids are UUIDs. A short or non-hex id usually means a test double leaked into a real code path.",
+      "expect_error_at": "/data/order_id",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "order-1",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "order-1",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "lowercase-sku",
+      "schema": "inventory.v1.StockReserved",
+      "why": "SKUs are case-sensitive keys into stock documents. Allowing both cases would let 'sku-widget-01' and 'SKU-WIDGET-01' become two independent stock records for one physical product, which is an oversell waiting to happen.",
+      "expect_error_at": "/data/lines/0/sku",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000002",
+        "event_type": "inventory.v1.StockReserved",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.412Z",
+        "aggregate_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+        "aggregate_type": "reservation",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "lines": [{ "sku": "sku-widget-01", "quantity": 2 }],
+          "idempotency_key": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f:reserve_stock:1",
+          "expires_at": "2026-03-14T09:20:00.412Z",
+          "reserved_at": "2026-03-14T09:15:00.412Z"
+        }
+      }
+    },
+    {
+      "name": "unknown-cancellation-reason",
+      "schema": "orders.v1.OrderCancelled",
+      "why": "cancellation_reason is a closed set. A producer inventing a member would break consumers that branch on it, so the schema is where it gets stopped.",
+      "expect_error_at": "/data/reason",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000007",
+        "event_type": "orders.v1.OrderCancelled",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:02.988Z",
+        "aggregate_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+        "aggregate_type": "order",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "producer": "orders",
+        "data": {
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "customer_id": "1d5a8c3f-7b2e-4d9a-8f6c-3e5b7d9f1a2c",
+          "customer_email": "grace@example.com",
+          "reason": "WAREHOUSE_ON_FIRE",
+          "failed_step": "COMMIT_RESERVATION",
+          "compensations_applied": ["REFUND_PAYMENT", "RELEASE_STOCK"],
+          "cancelled_at": "2026-03-14T11:02:02.988Z"
+        }
+      }
+    },
+    {
+      "name": "recipient-address-in-clear",
+      "schema": "notifications.v1.NotificationSent",
+      "why": "Notification events carry a hash, never an address. This case fails because `recipient` is not a declared field — the closed schema is what keeps personal data out of a topic with 30-day retention.",
+      "expect_error_at": "/data",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000007",
+        "event_type": "notifications.v1.NotificationSent",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:02.310Z",
+        "aggregate_id": "9e2f7a5c-3b1d-4f8a-9c6e-2d4b6a8c0e1f",
+        "aggregate_type": "notification",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "notifications",
+        "data": {
+          "notification_id": "9e2f7a5c-3b1d-4f8a-9c6e-2d4b6a8c0e1f",
+          "source_event_id": "01000000-0000-4000-8000-000000000006",
+          "channel": "EMAIL",
+          "template": "order_confirmed",
+          "recipient": "ada@example.com",
+          "recipient_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "attempts": 1,
+          "sent_at": "2026-03-14T09:15:02.310Z"
+        }
+      }
+    },
+    {
+      "name": "producer-does-not-own-event",
+      "schema": "payments.v1.PaymentCaptured",
+      "why": "Only payments may emit payment events. Pinning `producer` with a const means a misrouted or spoofed event fails validation at the consumer rather than being trusted.",
+      "expect_error_at": "/producer",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000004",
+        "event_type": "payments.v1.PaymentCaptured",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:01.633Z",
+        "aggregate_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+        "aggregate_type": "payment",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "payment_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "amount": { "amount_minor": 7499, "currency": "GBP" },
+          "captured_total": { "amount_minor": 7499, "currency": "GBP" },
+          "ledger_entry_id": "fa000000-0000-4000-8000-000000000001",
+          "captured_at": "2026-03-14T09:15:01.633Z"
+        }
+      }
+    },
+    {
+      "name": "timestamp-with-numeric-offset",
+      "schema": "orders.v1.OrderPlaced",
+      "why": "RFC 3339 allows '+01:00' but this system does not. Mixed offsets make string comparison of timestamps silently wrong, so the trailing Z is enforced by pattern.",
+      "expect_error_at": "/occurred_at",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T10:15:00.000+01:00",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }],
+          "total_amount": { "amount_minor": 1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "shortfall-with-no-shortfalls",
+      "schema": "inventory.v1.StockReservationFailed",
+      "why": "A failed reservation must say what was short. An empty list would tell the caller nothing and is almost always a bug in the availability check rather than a genuine state.",
+      "expect_error_at": "/data/shortfalls",
+      "event": {
+        "event_id": "03000000-0000-4000-8000-000000000001",
+        "event_type": "inventory.v1.StockReservationFailed",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T13:41:07.522Z",
+        "aggregate_id": "7e2a9c4d-1b8f-4e5a-9c3d-6b2f8a4c1e7d",
+        "aggregate_type": "reservation",
+        "correlation_id": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "7e2a9c4d-1b8f-4e5a-9c3d-6b2f8a4c1e7d",
+          "order_id": "9a4c7e2d-5f8b-4c3a-9e7d-2b6f4a8c1d3e",
+          "lines": [{ "sku": "SKU-GIZMO-07", "quantity": 5 }],
+          "shortfalls": [],
+          "idempotency_key": "9a4c7e2d-5f8b-4c3a-9e7d-2b6f4a8c1d3e:reserve_stock:1",
+          "failed_at": "2026-03-14T13:41:07.522Z"
+        }
+      }
+    }
+  ]
+}

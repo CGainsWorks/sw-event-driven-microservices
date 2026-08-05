@@ -1,0 +1,465 @@
+{
+  "$comment": "Golden sample events. These are not disconnected fixtures: stories A and B are two complete order journeys told end to end, so that reading this file top to bottom shows how correlation_id ties a transaction together and how causation_id records what caused what. Every event type in events/schemas/ appears at least once. These samples are validated by `npm test` in this directory and are reused as fixtures by the Pact contract tests in contracts/.",
+
+  "stories": {
+    "A": "Happy path. Ada orders two widgets and a gizmo; stock is reserved, payment is authorized and captured, the reservation is committed, the order is confirmed and Ada is emailed.",
+    "B": "Compensation path. Grace orders one widget. Stock is reserved and payment is captured, but committing the reservation fails. The saga compensates in reverse: refund the payment, release the stock, cancel the order. The cancellation email then fails to send, which changes nothing upstream.",
+    "C": "Reservation refused for want of stock.",
+    "D": "Authorization declined by the PSP.",
+    "E": "A reservation left behind by a dead saga, reclaimed by the expiry sweeper."
+  },
+
+  "$convention": "Stories C and D show a single event each, so the OrderPlaced that caused them is not reproduced here. Their causation_id ends in all zeros to stand for that omitted origin event. Story E has no causation_id at all, which is correct: the expiry sweeper acts on a timer, not in response to an event.",
+
+  "samples": [
+    {
+      "name": "A1-order-placed",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.000Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "lines": [
+            { "sku": "SKU-WIDGET-01", "quantity": 2, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } },
+            { "sku": "SKU-GIZMO-07", "quantity": 1, "unit_amount": { "amount_minor": 4999, "currency": "GBP" } }
+          ],
+          "total_amount": { "amount_minor": 7499, "currency": "GBP" },
+          "placed_at": "2026-03-14T09:15:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "A2-stock-reserved",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000002",
+        "event_type": "inventory.v1.StockReserved",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:00.412Z",
+        "aggregate_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+        "aggregate_type": "reservation",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "causation_id": "01000000-0000-4000-8000-000000000001",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "lines": [
+            { "sku": "SKU-WIDGET-01", "quantity": 2 },
+            { "sku": "SKU-GIZMO-07", "quantity": 1 }
+          ],
+          "idempotency_key": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f:reserve_stock:1",
+          "expires_at": "2026-03-14T09:20:00.412Z",
+          "reserved_at": "2026-03-14T09:15:00.412Z"
+        }
+      }
+    },
+    {
+      "name": "A3-payment-authorized",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000003",
+        "event_type": "payments.v1.PaymentAuthorized",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:01.078Z",
+        "aggregate_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+        "aggregate_type": "payment",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "causation_id": "01000000-0000-4000-8000-000000000001",
+        "producer": "payments",
+        "data": {
+          "payment_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "amount": { "amount_minor": 7499, "currency": "GBP" },
+          "idempotency_key": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f:authorize_payment:1",
+          "authorized_at": "2026-03-14T09:15:01.078Z",
+          "expires_at": "2026-03-21T09:15:01.078Z"
+        }
+      }
+    },
+    {
+      "name": "A4-payment-captured",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000004",
+        "event_type": "payments.v1.PaymentCaptured",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:01.633Z",
+        "aggregate_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+        "aggregate_type": "payment",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "causation_id": "01000000-0000-4000-8000-000000000001",
+        "producer": "payments",
+        "data": {
+          "payment_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "amount": { "amount_minor": 7499, "currency": "GBP" },
+          "captured_total": { "amount_minor": 7499, "currency": "GBP" },
+          "ledger_entry_id": "fa000000-0000-4000-8000-000000000001",
+          "captured_at": "2026-03-14T09:15:01.633Z"
+        }
+      }
+    },
+    {
+      "name": "A5-stock-committed",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000005",
+        "event_type": "inventory.v1.StockCommitted",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:01.904Z",
+        "aggregate_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+        "aggregate_type": "reservation",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "causation_id": "01000000-0000-4000-8000-000000000001",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "lines": [
+            { "sku": "SKU-WIDGET-01", "quantity": 2 },
+            { "sku": "SKU-GIZMO-07", "quantity": 1 }
+          ],
+          "committed_at": "2026-03-14T09:15:01.904Z"
+        }
+      }
+    },
+    {
+      "name": "A6-order-confirmed",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000006",
+        "event_type": "orders.v1.OrderConfirmed",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:01.951Z",
+        "aggregate_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+        "aggregate_type": "order",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "causation_id": "01000000-0000-4000-8000-000000000005",
+        "producer": "orders",
+        "data": {
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "customer_email": "ada@example.com",
+          "payment_id": "b4e7a1c9-2d8f-4e6b-a3c5-7d9e1f2a3b4c",
+          "reservation_id": "5d8c3b2a-1f4e-4a9b-8c7d-6e5f4a3b2c1d",
+          "total_amount": { "amount_minor": 7499, "currency": "GBP" },
+          "confirmed_at": "2026-03-14T09:15:01.951Z"
+        }
+      }
+    },
+    {
+      "name": "A7-notification-sent",
+      "story": "A",
+      "event": {
+        "event_id": "01000000-0000-4000-8000-000000000007",
+        "event_type": "notifications.v1.NotificationSent",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T09:15:02.310Z",
+        "aggregate_id": "9e2f7a5c-3b1d-4f8a-9c6e-2d4b6a8c0e1f",
+        "aggregate_type": "notification",
+        "correlation_id": "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        "causation_id": "01000000-0000-4000-8000-000000000006",
+        "producer": "notifications",
+        "data": {
+          "notification_id": "9e2f7a5c-3b1d-4f8a-9c6e-2d4b6a8c0e1f",
+          "source_event_id": "01000000-0000-4000-8000-000000000006",
+          "channel": "EMAIL",
+          "template": "order_confirmed",
+          "recipient_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+          "order_id": "3f2b9c14-7e5a-4d3b-9c8e-1a2b3c4d5e6f",
+          "attempts": 1,
+          "sent_at": "2026-03-14T09:15:02.310Z"
+        }
+      }
+    },
+
+    {
+      "name": "B1-order-placed",
+      "story": "B",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000001",
+        "event_type": "orders.v1.OrderPlaced",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:00.000Z",
+        "aggregate_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+        "aggregate_type": "order",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "producer": "orders",
+        "data": {
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "customer_id": "1d5a8c3f-7b2e-4d9a-8f6c-3e5b7d9f1a2c",
+          "customer_email": "grace@example.com",
+          "lines": [
+            { "sku": "SKU-WIDGET-01", "quantity": 1, "unit_amount": { "amount_minor": 1250, "currency": "GBP" } }
+          ],
+          "total_amount": { "amount_minor": 1250, "currency": "GBP" },
+          "placed_at": "2026-03-14T11:02:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "B2-stock-reserved",
+      "story": "B",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000002",
+        "event_type": "inventory.v1.StockReserved",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:00.298Z",
+        "aggregate_id": "4c9d2e1b-8a3f-4c6d-9b5e-7a1f3c5d7e9b",
+        "aggregate_type": "reservation",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000001",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "4c9d2e1b-8a3f-4c6d-9b5e-7a1f3c5d7e9b",
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1 }],
+          "idempotency_key": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d:reserve_stock:1",
+          "expires_at": "2026-03-14T11:07:00.298Z",
+          "reserved_at": "2026-03-14T11:02:00.298Z"
+        }
+      }
+    },
+    {
+      "name": "B3-payment-authorized",
+      "story": "B",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000003",
+        "event_type": "payments.v1.PaymentAuthorized",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:00.845Z",
+        "aggregate_id": "c5f8b2da-3e9a-4f7c-b4d6-8e0f2a4b6c8d",
+        "aggregate_type": "payment",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000001",
+        "producer": "payments",
+        "data": {
+          "payment_id": "c5f8b2da-3e9a-4f7c-b4d6-8e0f2a4b6c8d",
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "customer_id": "1d5a8c3f-7b2e-4d9a-8f6c-3e5b7d9f1a2c",
+          "amount": { "amount_minor": 1250, "currency": "GBP" },
+          "idempotency_key": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d:authorize_payment:1",
+          "authorized_at": "2026-03-14T11:02:00.845Z",
+          "expires_at": "2026-03-21T11:02:00.845Z"
+        }
+      }
+    },
+    {
+      "name": "B4-payment-captured",
+      "story": "B",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000004",
+        "event_type": "payments.v1.PaymentCaptured",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:01.201Z",
+        "aggregate_id": "c5f8b2da-3e9a-4f7c-b4d6-8e0f2a4b6c8d",
+        "aggregate_type": "payment",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000001",
+        "producer": "payments",
+        "data": {
+          "payment_id": "c5f8b2da-3e9a-4f7c-b4d6-8e0f2a4b6c8d",
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "customer_id": "1d5a8c3f-7b2e-4d9a-8f6c-3e5b7d9f1a2c",
+          "amount": { "amount_minor": 1250, "currency": "GBP" },
+          "captured_total": { "amount_minor": 1250, "currency": "GBP" },
+          "ledger_entry_id": "fa000000-0000-4000-8000-000000000002",
+          "captured_at": "2026-03-14T11:02:01.201Z"
+        }
+      }
+    },
+    {
+      "name": "B5-payment-refunded",
+      "story": "B",
+      "$comment": "Compensation for step 3, run because step 4 (CommitReservation) failed. Note that captured_total is unchanged at 1250: the capture still happened and stays in the ledger. Only refunded_total moves.",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000005",
+        "event_type": "payments.v1.PaymentRefunded",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:02.664Z",
+        "aggregate_id": "c5f8b2da-3e9a-4f7c-b4d6-8e0f2a4b6c8d",
+        "aggregate_type": "payment",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000001",
+        "producer": "payments",
+        "data": {
+          "payment_id": "c5f8b2da-3e9a-4f7c-b4d6-8e0f2a4b6c8d",
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "customer_id": "1d5a8c3f-7b2e-4d9a-8f6c-3e5b7d9f1a2c",
+          "amount": { "amount_minor": 1250, "currency": "GBP" },
+          "refunded_total": { "amount_minor": 1250, "currency": "GBP" },
+          "ledger_entry_id": "fa000000-0000-4000-8000-000000000003",
+          "reason": "SAGA_COMPENSATION",
+          "refunded_at": "2026-03-14T11:02:02.664Z"
+        }
+      }
+    },
+    {
+      "name": "B6-stock-released",
+      "story": "B",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000006",
+        "event_type": "inventory.v1.StockReleased",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:02.910Z",
+        "aggregate_id": "4c9d2e1b-8a3f-4c6d-9b5e-7a1f3c5d7e9b",
+        "aggregate_type": "reservation",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000001",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "4c9d2e1b-8a3f-4c6d-9b5e-7a1f3c5d7e9b",
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "lines": [{ "sku": "SKU-WIDGET-01", "quantity": 1 }],
+          "reason": "COMPENSATION",
+          "released_at": "2026-03-14T11:02:02.910Z"
+        }
+      }
+    },
+    {
+      "name": "B7-order-cancelled",
+      "story": "B",
+      "$comment": "compensations_applied lists them in the order they ran, which is the reverse of the forward path.",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000007",
+        "event_type": "orders.v1.OrderCancelled",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:02.988Z",
+        "aggregate_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+        "aggregate_type": "order",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000006",
+        "producer": "orders",
+        "data": {
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "customer_id": "1d5a8c3f-7b2e-4d9a-8f6c-3e5b7d9f1a2c",
+          "customer_email": "grace@example.com",
+          "reason": "RESERVATION_EXPIRED",
+          "failed_step": "COMMIT_RESERVATION",
+          "detail": "reservation 4c9d2e1b expired before commit; stock could not be deducted",
+          "compensations_applied": ["REFUND_PAYMENT", "RELEASE_STOCK"],
+          "cancelled_at": "2026-03-14T11:02:02.988Z"
+        }
+      }
+    },
+    {
+      "name": "B8-notification-failed",
+      "story": "B",
+      "$comment": "The cancellation email could not be delivered after three attempts. Nothing upstream changes: the order stays cancelled, the refund stays refunded. This is what it means for notifications to be a terminal consumer.",
+      "event": {
+        "event_id": "02000000-0000-4000-8000-000000000008",
+        "event_type": "notifications.v1.NotificationFailed",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T11:02:34.115Z",
+        "aggregate_id": "3b7f1d5a-8c4e-4b2f-9a6d-1e3c5a7f9b2d",
+        "aggregate_type": "notification",
+        "correlation_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "causation_id": "02000000-0000-4000-8000-000000000007",
+        "producer": "notifications",
+        "data": {
+          "notification_id": "3b7f1d5a-8c4e-4b2f-9a6d-1e3c5a7f9b2d",
+          "source_event_id": "02000000-0000-4000-8000-000000000007",
+          "channel": "EMAIL",
+          "template": "order_cancelled",
+          "recipient_hash": "6b3a55e0261b0304143f805a24924d0c1c44524821305f31d9277843b8a10f4e",
+          "order_id": "6b3e8d21-9f4c-4b7a-8e2d-5c1a9f7b3e4d",
+          "attempts": 3,
+          "failure_reason": "smtp: connection refused after 3 attempts over 30s",
+          "failed_at": "2026-03-14T11:02:34.115Z"
+        }
+      }
+    },
+
+    {
+      "name": "C1-stock-reservation-failed",
+      "story": "C",
+      "$comment": "Every short SKU is reported, not just the first. Here only one line was short.",
+      "event": {
+        "event_id": "03000000-0000-4000-8000-000000000001",
+        "event_type": "inventory.v1.StockReservationFailed",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T13:41:07.522Z",
+        "aggregate_id": "7e2a9c4d-1b8f-4e5a-9c3d-6b2f8a4c1e7d",
+        "aggregate_type": "reservation",
+        "correlation_id": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "causation_id": "03000000-0000-4000-8000-000000000000",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "7e2a9c4d-1b8f-4e5a-9c3d-6b2f8a4c1e7d",
+          "order_id": "9a4c7e2d-5f8b-4c3a-9e7d-2b6f4a8c1d3e",
+          "lines": [
+            { "sku": "SKU-GIZMO-07", "quantity": 5 },
+            { "sku": "SKU-WIDGET-01", "quantity": 1 }
+          ],
+          "shortfalls": [{ "sku": "SKU-GIZMO-07", "requested": 5, "available": 2 }],
+          "idempotency_key": "9a4c7e2d-5f8b-4c3a-9e7d-2b6f4a8c1d3e:reserve_stock:1",
+          "failed_at": "2026-03-14T13:41:07.522Z"
+        }
+      }
+    },
+
+    {
+      "name": "D1-payment-failed",
+      "story": "D",
+      "$comment": "retryable is false because CARD_DECLINED is terminal. The saga compensates immediately rather than backing off.",
+      "event": {
+        "event_id": "04000000-0000-4000-8000-000000000001",
+        "event_type": "payments.v1.PaymentFailed",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T15:08:19.377Z",
+        "aggregate_id": "d6a9c3eb-4f2a-4b8d-a5c7-9f1e3b5d7a9c",
+        "aggregate_type": "payment",
+        "correlation_id": "4d5e6f7a-8b9c-4d0e-8f1a-2b3c4d5e6f7a",
+        "causation_id": "04000000-0000-4000-8000-000000000000",
+        "producer": "payments",
+        "data": {
+          "payment_id": "d6a9c3eb-4f2a-4b8d-a5c7-9f1e3b5d7a9c",
+          "order_id": "2e7b4d9a-6c1f-4a8e-b3d5-7f9a1c3e5b7d",
+          "customer_id": "8c1d4e2a-5b6f-4a7c-8d9e-0f1a2b3c4d5e",
+          "amount": { "amount_minor": 3200, "currency": "GBP" },
+          "operation": "AUTHORIZE",
+          "failure_code": "CARD_DECLINED",
+          "retryable": false,
+          "detail": "psp returned do_not_honour",
+          "idempotency_key": "2e7b4d9a-6c1f-4a8e-b3d5-7f9a1c3e5b7d:authorize_payment:1",
+          "failed_at": "2026-03-14T15:08:19.377Z"
+        }
+      }
+    },
+
+    {
+      "name": "E1-reservation-expired",
+      "story": "E",
+      "$comment": "reserved_duration_ms exceeds the 300000 ms TTL by the sweeper interval. A healthy saga never produces this event; seeing it in production means the TTL is too short or a saga died.",
+      "event": {
+        "event_id": "05000000-0000-4000-8000-000000000001",
+        "event_type": "inventory.v1.ReservationExpired",
+        "event_version": 1,
+        "occurred_at": "2026-03-14T16:22:44.006Z",
+        "aggregate_id": "8f3c6a1e-2d9b-4f7c-a4e6-1b3d5f7a9c2e",
+        "aggregate_type": "reservation",
+        "correlation_id": "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
+        "producer": "inventory",
+        "data": {
+          "reservation_id": "8f3c6a1e-2d9b-4f7c-a4e6-1b3d5f7a9c2e",
+          "order_id": "5a8d3f6c-9e2b-4a7d-8c1f-4e6b8d0a2c4e",
+          "lines": [{ "sku": "SKU-GIZMO-07", "quantity": 3 }],
+          "expired_at": "2026-03-14T16:22:44.006Z",
+          "reserved_duration_ms": 304118
+        }
+      }
+    }
+  ]
+}

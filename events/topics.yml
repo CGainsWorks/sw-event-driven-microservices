@@ -1,0 +1,127 @@
+# Kafka topic definitions.
+#
+# This file is the single source of truth for topology. `scripts/create_topics.sh`
+# applies it, and tests/integration asserts that the running cluster matches it, so a
+# topic cannot drift from what is documented here without a test failing.
+#
+# Conventions
+#   name        <context>.v<major>.events — the major version is part of the topic name,
+#               not a header, so an incompatible schema change is a new topic that old
+#               consumers simply never see. See docs/event_catalogue.md, "Versioning".
+#   key         The aggregate id. Kafka guarantees order within a partition, so keying by
+#               aggregate is what gives per-aggregate ordering. There is no global order
+#               and no consumer may assume one.
+#   partitions  6 everywhere. Chosen so that partition count is not the limit on consumer
+#               parallelism at demo scale while staying small enough to run on a laptop.
+#               It is not a tuned number and nothing in the repository claims it is.
+#   replication 1, because this runs on a single-broker local cluster. Any real deployment
+#               needs 3 with min.insync.replicas=2; the kind manifests in deploy/k8s use 3.
+
+defaults:
+  partitions: 6
+  replication_factor: 1
+  configs:
+    cleanup.policy: delete
+    retention.ms: 604800000        # 7 days
+    min.insync.replicas: 1
+    compression.type: zstd
+    max.message.bytes: 1048576     # 1 MiB. Events carrying more than this are a design error.
+
+topics:
+  - name: orders.v1.events
+    key: order_id
+    owner: orders
+    consumers: [notifications]
+    schemas:
+      - orders.v1.OrderPlaced
+      - orders.v1.OrderConfirmed
+      - orders.v1.OrderCancelled
+    notes: >
+      Order lifecycle. OrderPlaced is the origin of every correlation_id in the system.
+      Multiple event types share one topic deliberately: they concern the same aggregate,
+      so they must share a partition to stay ordered. Consumers dispatch on event_type.
+
+  - name: payments.v1.events
+    key: payment_id
+    owner: payments
+    consumers: [notifications]
+    schemas:
+      - payments.v1.PaymentAuthorized
+      - payments.v1.PaymentCaptured
+      - payments.v1.PaymentRefunded
+      - payments.v1.PaymentFailed
+    notes: >
+      Money movement, keyed by payment_id rather than order_id so that all events for one
+      payment stay ordered even in the (unmodelled) case of several payments per order.
+
+  - name: inventory.v1.events
+    key: reservation_id
+    owner: inventory
+    consumers: [notifications]
+    schemas:
+      - inventory.v1.StockReserved
+      - inventory.v1.StockReservationFailed
+      - inventory.v1.StockReleased
+      - inventory.v1.StockCommitted
+      - inventory.v1.ReservationExpired
+    notes: >
+      Reservation lifecycle. Keyed by reservation_id, not sku, because a reservation spans
+      several SKUs and splitting it across partitions would lose the ordering that matters.
+      There is deliberately no per-SKU stock-level topic: nothing needs one, and adding it
+      would be ceremony.
+
+  - name: notifications.v1.events
+    key: notification_id
+    owner: notifications
+    consumers: []
+    configs:
+      retention.ms: 2592000000     # 30 days. Kept longer than the rest for audit: this is
+                                   # the record of what a customer was and was not told.
+    schemas:
+      - notifications.v1.NotificationSent
+      - notifications.v1.NotificationFailed
+    notes: >
+      Terminal topic with no subscribers. It exists so the last stage of the pipeline is
+      observable. Carries no message bodies and no recipient addresses, only a hash.
+
+# Dead letter topics.
+#
+# A consumer that fails on a message retries with backoff; after `max_delivery_attempts`
+# the message goes here rather than blocking the partition behind it. One partition each,
+# because DLQ throughput is expected to be near zero and ordering across the whole DLQ is
+# more useful than parallelism when a human is reading it.
+#
+# Retention is 30 days: long enough that a Monday-morning investigation into a Friday-night
+# incident still has the evidence.
+dead_letter:
+  suffix: .dlq
+  partitions: 1
+  configs:
+    retention.ms: 2592000000
+  headers:
+    # Set by libs/* when a message is dead-lettered. The original message body is copied
+    # verbatim so that a fixed consumer can replay it without reconstruction.
+    - dlq.original_topic
+    - dlq.original_partition
+    - dlq.original_offset
+    - dlq.failure_reason
+    - dlq.attempts
+    - dlq.first_failed_at
+    - dlq.last_failed_at
+  topics:
+    - orders.v1.events.dlq
+    - payments.v1.events.dlq
+    - inventory.v1.events.dlq
+    - notifications.v1.events.dlq
+
+# Consumer groups. Listed here so the full wiring is visible in one place.
+consumer_groups:
+  - group: notifications-order-events
+    service: notifications
+    topic: orders.v1.events
+  - group: notifications-payment-events
+    service: notifications
+    topic: payments.v1.events
+  - group: notifications-inventory-events
+    service: notifications
+    topic: inventory.v1.events

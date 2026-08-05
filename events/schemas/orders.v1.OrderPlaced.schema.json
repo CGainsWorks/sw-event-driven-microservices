@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/orders.v1.OrderPlaced.schema.json",
+  "title": "orders.v1.OrderPlaced",
+  "description": "A customer has committed to buy. This is the trigger for the fulfilment saga and the origin of every correlation_id in the system. Publishing it does NOT mean the order can be fulfilled — stock has not been checked and no money has moved. Consumers that treat OrderPlaced as a sale are wrong; wait for OrderConfirmed.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "orders.v1.OrderPlaced" },
+        "aggregate_type": { "const": "order" },
+        "producer": { "const": "orders" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_email": {
+              "type": "string",
+              "format": "email",
+              "maxLength": 254,
+              "description": "Carried on the event so that notifications never has to call back into orders to send a confirmation. This is deliberate denormalisation: it trades a stale-email risk for the removal of a runtime dependency."
+            },
+            "lines": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": { "$ref": "common.schema.json#/$defs/order_line" },
+              "description": "At least one line. SKUs are unique within an order; duplicates are merged at the API boundary."
+            },
+            "total_amount": {
+              "$ref": "common.schema.json#/$defs/money",
+              "description": "Sum of quantity x unit_amount across all lines. Carried explicitly rather than left for consumers to compute, so that every service agrees on the figure and rounding happens exactly once."
+            },
+            "placed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "order_id",
+            "customer_id",
+            "customer_email",
+            "lines",
+            "total_amount",
+            "placed_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

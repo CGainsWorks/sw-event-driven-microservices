@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/orders.v1.OrderConfirmed.schema.json",
+  "title": "orders.v1.OrderConfirmed",
+  "description": "The saga completed every forward step: stock is deducted, money is captured, the order is terminal. This is the event that means a sale happened. Emitted exactly once per order.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "orders.v1.OrderConfirmed" },
+        "aggregate_type": { "const": "order" },
+        "producer": { "const": "orders" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_email": { "type": "string", "format": "email", "maxLength": 254 },
+            "payment_id": {
+              "$ref": "common.schema.json#/$defs/uuid",
+              "description": "The captured payment. Included so that a consumer reconciling orders against money does not need to join through a third topic."
+            },
+            "reservation_id": {
+              "$ref": "common.schema.json#/$defs/uuid",
+              "description": "The committed stock reservation."
+            },
+            "total_amount": { "$ref": "common.schema.json#/$defs/money" },
+            "confirmed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "order_id",
+            "customer_id",
+            "customer_email",
+            "payment_id",
+            "reservation_id",
+            "total_amount",
+            "confirmed_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+# Normalise line endings. Stored as LF in the repository, checked out as LF everywhere.
+# Without this, a Windows checkout rewrites every file to CRLF and the shell scripts that
+# run inside Linux containers fail with `bad interpreter: /bin/sh^M` — a failure whose
+# message points nowhere near its cause.
+* text=auto eol=lf
+
+# Files that must keep LF regardless, because something other than git reads them.
+*.sh            text eol=lf
+*.bash          text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+Makefile        text eol=lf
+*.mk            text eol=lf
+
+# Windows-only files that must keep CRLF.
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Binary. Never diffed, never line-ending-converted.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.pdf           binary
+*.zip           binary
+*.tar.gz        binary
+*.woff2         binary
+
+# --- Git LFS ----------------------------------------------------------------
+# This project produces no model weights, rosbags or media, so LFS is configured but
+# unused. The rules are declared up front so that if a demo recording or a trace dump
+# is added later it goes to LFS rather than into the object history, where it cannot
+# be removed without rewriting every commit after it.
+#
+# LFS must be initialised before these take effect: `git lfs install`.
+*.gif           filter=lfs diff=lfs merge=lfs -text
+*.mp4           filter=lfs diff=lfs merge=lfs -text
+*.webm          filter=lfs diff=lfs merge=lfs -text
+*.bag           filter=lfs diff=lfs merge=lfs -text
+*.mcap          filter=lfs diff=lfs merge=lfs -text
+*.pt            filter=lfs diff=lfs merge=lfs -text
+*.onnx          filter=lfs diff=lfs merge=lfs -text
+
+# --- Diff and linguist hints ------------------------------------------------
+# Generated protobuf code is excluded from the repository entirely (see .gitignore),
+# but mark it collapsed in diffs in case it is ever vendored deliberately.
+proto/gen/**    linguist-generated=true
+*.pb.go         linguist-generated=true
+*_pb2.py        linguist-generated=true
+events/samples/*.json  linguist-documentation=true

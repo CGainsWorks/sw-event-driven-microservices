@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/notifications.v1.NotificationSent.schema.json",
+  "title": "notifications.v1.NotificationSent",
+  "description": "A message was handed to a delivery channel and accepted by it. This means 'the provider took it', not 'the customer read it' — this system has no delivery receipt. Nothing subscribes to this topic; it exists so that the notifications service's behaviour is observable and auditable rather than a black hole at the end of the pipeline.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "notifications.v1.NotificationSent" },
+        "aggregate_type": { "const": "notification" },
+        "producer": { "const": "notifications" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "notification_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "source_event_id": {
+              "$ref": "common.schema.json#/$defs/uuid",
+              "description": "The event_id that triggered this notification. Together with `channel` it forms the uniqueness key that stops a redelivered OrderConfirmed from emailing the customer twice."
+            },
+            "channel": { "$ref": "common.schema.json#/$defs/notification_channel" },
+            "template": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Template identifier, e.g. order_confirmed. Not the rendered body — message content is never published to Kafka."
+            },
+            "recipient_hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "SHA-256 of the recipient address. The address itself is deliberately NOT published: this topic has a long retention and there is no reason for personal data to sit in it. The hash is enough to correlate and to prove a duplicate was avoided."
+            },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "provider_message_id": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "Identifier returned by the delivery provider, for support queries. Absent for the built-in log sender."
+            },
+            "attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "How many tries it took, including the successful one."
+            },
+            "sent_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "notification_id",
+            "source_event_id",
+            "channel",
+            "template",
+            "recipient_hash",
+            "order_id",
+            "attempts",
+            "sent_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

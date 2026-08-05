@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/notifications.v1.NotificationFailed.schema.json",
+  "title": "notifications.v1.NotificationFailed",
+  "description": "Delivery was attempted the maximum number of times and never accepted. The notification is abandoned; nothing retries it after this. No upstream state changes as a result — an order stays confirmed whether or not the customer was told, which is the whole point of notifications being a terminal consumer.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "notifications.v1.NotificationFailed" },
+        "aggregate_type": { "const": "notification" },
+        "producer": { "const": "notifications" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "notification_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "source_event_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "channel": { "$ref": "common.schema.json#/$defs/notification_channel" },
+            "template": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "recipient_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "attempts": { "type": "integer", "minimum": 1 },
+            "failure_reason": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "Operator-facing text from the last attempt."
+            },
+            "failed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "notification_id",
+            "source_event_id",
+            "channel",
+            "template",
+            "recipient_hash",
+            "order_id",
+            "attempts",
+            "failure_reason",
+            "failed_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

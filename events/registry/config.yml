@@ -1,0 +1,94 @@
+# Schema registry configuration.
+#
+# Applied by scripts/register_schemas.sh against the Confluent Schema Registry that
+# docker compose starts on :8081. Registration is enforced in CI: a pull request that
+# changes a schema in a way the registry rejects fails before it can be merged.
+
+registry_url: http://localhost:8081
+schema_type: JSON
+
+# Subject naming.
+#
+# TopicRecordNameStrategy, not TopicNameStrategy. Each topic carries several event types,
+# so a per-topic subject would force every type on a topic to share one schema — which
+# would mean one enormous union type with everything optional, and no useful validation.
+#
+# Subject = "<topic>-<event_type>", e.g. "orders.v1.events-orders.v1.OrderPlaced".
+# Each event type gets its own subject and its own independent compatibility history.
+subject_naming_strategy: TopicRecordNameStrategy
+
+# Compatibility.
+#
+# BACKWARD means a consumer built against the new schema can read data written with the
+# previous one. That is the direction that matters here, because consumers are upgraded
+# before producers: the consumer must understand old messages still sitting in the topic.
+#
+# In practice BACKWARD permits:
+#   - adding an optional field
+#   - deleting a required field         (a new consumer stops asking for it)
+# and forbids:
+#   - adding a required field           (old messages would not have it)
+#   - narrowing a type or a constraint
+#   - renaming anything                 (rename = delete + add, and the add is required)
+#
+# Anything forbidden is not a schema change. It is a new major version, which means a new
+# topic — see "Versioning" in docs/event_catalogue.md.
+default_compatibility: BACKWARD
+
+# Per-subject overrides.
+overrides:
+  # Payment schemas use BACKWARD_TRANSITIVE: compatibility is checked against every
+  # previous version, not just the immediately preceding one. Financial events are
+  # replayed from the beginning of the topic during audit and reconciliation, so a
+  # consumer must be able to read version 1 no matter how many versions have followed.
+  - subject_pattern: "payments.v1.events-*"
+    compatibility: BACKWARD_TRANSITIVE
+
+  # Notification events are never replayed by anything and have no subscribers, so the
+  # constraint is relaxed to FULL only for the audit fields. Left at the default instead:
+  # there is no cost to keeping it strict and one fewer exception to remember.
+
+schemas:
+  - subject: orders.v1.events-orders.v1.OrderPlaced
+    file: schemas/orders.v1.OrderPlaced.schema.json
+  - subject: orders.v1.events-orders.v1.OrderConfirmed
+    file: schemas/orders.v1.OrderConfirmed.schema.json
+  - subject: orders.v1.events-orders.v1.OrderCancelled
+    file: schemas/orders.v1.OrderCancelled.schema.json
+
+  - subject: payments.v1.events-payments.v1.PaymentAuthorized
+    file: schemas/payments.v1.PaymentAuthorized.schema.json
+  - subject: payments.v1.events-payments.v1.PaymentCaptured
+    file: schemas/payments.v1.PaymentCaptured.schema.json
+  - subject: payments.v1.events-payments.v1.PaymentRefunded
+    file: schemas/payments.v1.PaymentRefunded.schema.json
+  - subject: payments.v1.events-payments.v1.PaymentFailed
+    file: schemas/payments.v1.PaymentFailed.schema.json
+
+  - subject: inventory.v1.events-inventory.v1.StockReserved
+    file: schemas/inventory.v1.StockReserved.schema.json
+  - subject: inventory.v1.events-inventory.v1.StockReservationFailed
+    file: schemas/inventory.v1.StockReservationFailed.schema.json
+  - subject: inventory.v1.events-inventory.v1.StockReleased
+    file: schemas/inventory.v1.StockReleased.schema.json
+  - subject: inventory.v1.events-inventory.v1.StockCommitted
+    file: schemas/inventory.v1.StockCommitted.schema.json
+  - subject: inventory.v1.events-inventory.v1.ReservationExpired
+    file: schemas/inventory.v1.ReservationExpired.schema.json
+
+  - subject: notifications.v1.events-notifications.v1.NotificationSent
+    file: schemas/notifications.v1.NotificationSent.schema.json
+  - subject: notifications.v1.events-notifications.v1.NotificationFailed
+    file: schemas/notifications.v1.NotificationFailed.schema.json
+
+# Shared definitions are registered as their own subjects so that per-event schemas can
+# reference them by subject rather than inlining a copy. Without this the registry has no
+# way to resolve the relative $refs in the event schemas.
+references:
+  - subject: common.schema.json
+    file: schemas/common.schema.json
+  - subject: envelope.schema.json
+    file: schemas/envelope.schema.json
+    refs:
+      - name: common.schema.json
+        subject: common.schema.json

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/payments.v1.PaymentAuthorized.schema.json",
+  "title": "payments.v1.PaymentAuthorized",
+  "description": "Funds are held but not taken. Reversible by VoidAuthorization with no customer-visible refund. An authorization expires if not captured; `expires_at` states when.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "payments.v1.PaymentAuthorized" },
+        "aggregate_type": { "const": "payment" },
+        "producer": { "const": "payments" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "payment_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "amount": { "$ref": "common.schema.json#/$defs/money" },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "description": "The caller-supplied key that produced this authorization. Published so that a caller which lost the response can recognise its own request when replaying the topic, without a synchronous reconciliation call."
+            },
+            "authorized_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+            "expires_at": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "After this instant the hold lapses at the PSP and CapturePayment will fail. The saga must complete capture before it."
+            }
+          },
+          "required": [
+            "payment_id",
+            "order_id",
+            "customer_id",
+            "amount",
+            "idempotency_key",
+            "authorized_at",
+            "expires_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

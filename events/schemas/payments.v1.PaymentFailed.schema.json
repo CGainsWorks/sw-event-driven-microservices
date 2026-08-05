@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/payments.v1.PaymentFailed.schema.json",
+  "title": "payments.v1.PaymentFailed",
+  "description": "An authorization or capture attempt did not succeed. `payment_id` is present even for a failed authorization: payments allocates the id and records the attempt before calling the PSP, so that a retry with the same idempotency key resolves to the same record rather than creating a second one. `retryable` tells the caller whether backing off could ever help.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "payments.v1.PaymentFailed" },
+        "aggregate_type": { "const": "payment" },
+        "producer": { "const": "payments" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "payment_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "amount": { "$ref": "common.schema.json#/$defs/money" },
+            "operation": {
+              "type": "string",
+              "enum": ["AUTHORIZE", "CAPTURE", "VOID", "REFUND"],
+              "description": "Which operation failed. A failed VOID or REFUND is a compensation failure and requires operator attention; it is the one case this system cannot resolve automatically."
+            },
+            "failure_code": { "$ref": "common.schema.json#/$defs/payment_failure_code" },
+            "retryable": {
+              "type": "boolean",
+              "description": "True when the same request could succeed later (PSP_UNAVAILABLE, INTERNAL_ERROR). False for terminal declines. Derived from failure_code and published explicitly so consumers do not have to keep their own copy of that mapping."
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "Operator-facing text. Never contains a card number, name or any PSP token."
+            },
+            "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128 },
+            "failed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "payment_id",
+            "order_id",
+            "customer_id",
+            "amount",
+            "operation",
+            "failure_code",
+            "retryable",
+            "idempotency_key",
+            "failed_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

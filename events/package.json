@@ -1,0 +1,20 @@
+{
+  "name": "@sw-edm/events",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Event schemas, topic topology and schema registry configuration. The contract every service is held to.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test",
+    "validate": "node validate.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "yaml": "2.8.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

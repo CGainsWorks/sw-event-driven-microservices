@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/inventory.v1.StockReservationFailed.schema.json",
+  "title": "inventory.v1.StockReservationFailed",
+  "description": "A claim could not be satisfied. `shortfalls` lists every SKU that was short, not just the first one, so that the caller learns everything wrong with the request in one round trip. A reservation_id is still allocated and recorded in FAILED state, so a retry with the same idempotency_key returns this same answer rather than re-running the check against changed stock.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "inventory.v1.StockReservationFailed" },
+        "aggregate_type": { "const": "reservation" },
+        "producer": { "const": "inventory" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "reservation_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "lines": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": { "$ref": "common.schema.json#/$defs/stock_line" },
+              "description": "What was requested."
+            },
+            "shortfalls": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "common.schema.json#/$defs/shortfall" },
+              "description": "Every SKU that could not be satisfied, with the availability observed at the moment of the check. Advisory only: by the time a consumer reads this the figure may have changed."
+            },
+            "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128 },
+            "failed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "reservation_id",
+            "order_id",
+            "lines",
+            "shortfalls",
+            "idempotency_key",
+            "failed_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

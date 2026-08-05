@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/inventory.v1.StockCommitted.schema.json",
+  "title": "inventory.v1.StockCommitted",
+  "description": "A reservation became a deduction. `on_hand` and `reserved` both fall by the committed quantities, so availability is unchanged by this event — the units simply stop being ours. This is the last forward step of the saga and the point at which stock leaves the building. Undoing it means restocking, which is a warehouse operation this system does not model.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "inventory.v1.StockCommitted" },
+        "aggregate_type": { "const": "reservation" },
+        "producer": { "const": "inventory" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "reservation_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "lines": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": { "$ref": "common.schema.json#/$defs/stock_line" }
+            },
+            "committed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": ["reservation_id", "order_id", "lines", "committed_at"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

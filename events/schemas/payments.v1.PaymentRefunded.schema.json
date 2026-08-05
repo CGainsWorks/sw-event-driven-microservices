@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/payments.v1.PaymentRefunded.schema.json",
+  "title": "payments.v1.PaymentRefunded",
+  "description": "A capture has been reversed. This is a compensation, not a rollback: the original capture still happened and both entries remain in the ledger forever. Emitted when the saga fails after CapturePayment succeeded.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "payments.v1.PaymentRefunded" },
+        "aggregate_type": { "const": "payment" },
+        "producer": { "const": "payments" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "payment_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "amount": { "$ref": "common.schema.json#/$defs/money" },
+            "refunded_total": {
+              "$ref": "common.schema.json#/$defs/money",
+              "description": "Running total refunded against this payment after this event. Never exceeds captured_total; that is the ledger invariant."
+            },
+            "ledger_entry_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "reason": {
+              "type": "string",
+              "enum": ["SAGA_COMPENSATION", "CUSTOMER_REQUESTED", "OPERATOR_INITIATED"],
+              "description": "SAGA_COMPENSATION is the automated path exercised by this system. The other two exist so the ledger can represent refunds this system did not cause."
+            },
+            "refunded_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "payment_id",
+            "order_id",
+            "customer_id",
+            "amount",
+            "refunded_total",
+            "ledger_entry_id",
+            "reason",
+            "refunded_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

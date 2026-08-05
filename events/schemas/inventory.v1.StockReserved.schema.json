@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/inventory.v1.StockReserved.schema.json",
+  "title": "inventory.v1.StockReserved",
+  "description": "A time-limited claim on stock succeeded. Units are counted against `reserved` but still physically present and still counted in `on_hand`. Nothing has been deducted. The claim lapses at `expires_at` unless committed or released first.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "inventory.v1.StockReserved" },
+        "aggregate_type": { "const": "reservation" },
+        "producer": { "const": "inventory" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "reservation_id": {
+              "$ref": "common.schema.json#/$defs/uuid",
+              "description": "Allocated by inventory before the claim is attempted, so that a retried request with the same idempotency_key resolves to this same reservation rather than making a second one."
+            },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "lines": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": { "$ref": "common.schema.json#/$defs/stock_line" }
+            },
+            "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128 },
+            "expires_at": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "When the claim lapses. Must comfortably exceed the saga's worst-case time to reach CommitReservation, or reservations will expire mid-saga. See docs/sagas.md for the budget."
+            },
+            "reserved_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "reservation_id",
+            "order_id",
+            "lines",
+            "idempotency_key",
+            "expires_at",
+            "reserved_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

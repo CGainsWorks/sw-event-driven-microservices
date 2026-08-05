@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/common.schema.json",
+  "title": "Shared type definitions",
+  "description": "Value objects reused across event payloads. Defined once so that a change to Money or OrderLine is a single edit reviewed in one place.",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "RFC 4122 UUID, lowercase canonical form."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+      "description": "RFC 3339 timestamp in UTC. The trailing Z is required by the pattern, not merely requested: RFC 3339 permits a numeric offset, and once two producers in different zones emit the same instant with different offsets, naive string comparison of timestamps starts returning wrong answers. Forbidding offsets at the schema makes that class of bug unrepresentable."
+    },
+    "sku": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Z0-9][A-Z0-9-]*$",
+      "description": "Opaque stock keeping unit identifier. This system never interprets it."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 alphabetic currency code."
+    },
+    "money": {
+      "type": "object",
+      "description": "A monetary amount in minor units. Integer minor units are used rather than a decimal string because JSON numbers are IEEE 754 doubles and cannot represent all decimal amounts exactly. 1250 GBP minor units is twelve pounds fifty.",
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Amount in the currency's minor unit (pence, cents). Non-negative; direction is carried by the event type, not the sign."
+        },
+        "currency": { "$ref": "#/$defs/currency" }
+      },
+      "required": ["amount_minor", "currency"],
+      "additionalProperties": false
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000,
+      "description": "A positive count of units. Zero-quantity lines are rejected at the API boundary, not carried in events."
+    },
+    "order_line": {
+      "type": "object",
+      "description": "One SKU and quantity within an order. Immutable once the order is placed.",
+      "properties": {
+        "sku": { "$ref": "#/$defs/sku" },
+        "quantity": { "$ref": "#/$defs/quantity" },
+        "unit_amount": { "$ref": "#/$defs/money" }
+      },
+      "required": ["sku", "quantity", "unit_amount"],
+      "additionalProperties": false
+    },
+    "stock_line": {
+      "type": "object",
+      "description": "A SKU and quantity as seen by inventory. Carries no price; inventory has no business knowing what anything costs.",
+      "properties": {
+        "sku": { "$ref": "#/$defs/sku" },
+        "quantity": { "$ref": "#/$defs/quantity" }
+      },
+      "required": ["sku", "quantity"],
+      "additionalProperties": false
+    },
+    "shortfall": {
+      "type": "object",
+      "description": "Why a reservation could not be satisfied for one SKU.",
+      "properties": {
+        "sku": { "$ref": "#/$defs/sku" },
+        "requested": { "type": "integer", "minimum": 1 },
+        "available": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["sku", "requested", "available"],
+      "additionalProperties": false
+    },
+    "cancellation_reason": {
+      "type": "string",
+      "enum": [
+        "INSUFFICIENT_STOCK",
+        "PAYMENT_DECLINED",
+        "PAYMENT_ERROR",
+        "RESERVATION_EXPIRED",
+        "CUSTOMER_REQUESTED",
+        "SAGA_TIMEOUT",
+        "INTERNAL_ERROR"
+      ],
+      "description": "Closed set. Adding a member is a backward-compatible change for producers but consumers must treat unknown members as INTERNAL_ERROR rather than crashing."
+    },
+    "payment_failure_code": {
+      "type": "string",
+      "enum": [
+        "INSUFFICIENT_FUNDS",
+        "CARD_DECLINED",
+        "CARD_EXPIRED",
+        "FRAUD_SUSPECTED",
+        "PSP_UNAVAILABLE",
+        "INVALID_REQUEST",
+        "INTERNAL_ERROR"
+      ],
+      "description": "INSUFFICIENT_FUNDS, CARD_DECLINED, CARD_EXPIRED and FRAUD_SUSPECTED are terminal: retrying will not help. PSP_UNAVAILABLE and INTERNAL_ERROR are retryable. Consumers use this distinction to decide whether to compensate or back off."
+    },
+    "release_reason": {
+      "type": "string",
+      "enum": ["COMPENSATION", "EXPIRY", "ORDER_CANCELLED"],
+      "description": "Why a stock reservation was given back."
+    },
+    "notification_channel": {
+      "type": "string",
+      "enum": ["EMAIL", "SMS", "PUSH"],
+      "description": "Delivery channel. Only EMAIL is implemented; SMS and PUSH are modelled but their senders are not built. See docs/event_catalogue.md."
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/orders.v1.OrderCancelled.schema.json",
+  "title": "orders.v1.OrderCancelled",
+  "description": "The saga failed and every completed step has been compensated. The order is terminal. By the time this is published, stock has been released and any authorization voided or capture refunded — compensation is complete, not merely started. A consumer seeing this can assume the system holds nothing on the customer's behalf.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "orders.v1.OrderCancelled" },
+        "aggregate_type": { "const": "order" },
+        "producer": { "const": "orders" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_email": { "type": "string", "format": "email", "maxLength": 254 },
+            "reason": { "$ref": "common.schema.json#/$defs/cancellation_reason" },
+            "failed_step": {
+              "type": "string",
+              "enum": ["RESERVE_STOCK", "AUTHORIZE_PAYMENT", "CAPTURE_PAYMENT", "COMMIT_RESERVATION", "NONE"],
+              "description": "Which forward step failed. NONE when the order was cancelled before the saga began, e.g. by customer request."
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "Human-readable explanation for operators and customer support. Never parsed by consumers; branch on `reason` instead."
+            },
+            "compensations_applied": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["RELEASE_STOCK", "VOID_AUTHORIZATION", "REFUND_PAYMENT"]
+              },
+              "uniqueItems": true,
+              "description": "Which compensations actually ran. Empty when the saga failed on its first step and there was nothing to undo."
+            },
+            "cancelled_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "order_id",
+            "customer_id",
+            "customer_email",
+            "reason",
+            "failed_step",
+            "compensations_applied",
+            "cancelled_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

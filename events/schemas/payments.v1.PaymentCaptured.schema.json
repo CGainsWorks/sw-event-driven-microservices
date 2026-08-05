@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/payments.v1.PaymentCaptured.schema.json",
+  "title": "payments.v1.PaymentCaptured",
+  "description": "Money has actually moved. This is the point of no cheap return: the only way back is a refund, which the customer sees on their statement. Everything before capture is reversible invisibly; nothing after it is.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": { "const": "payments.v1.PaymentCaptured" },
+        "aggregate_type": { "const": "payment" },
+        "producer": { "const": "payments" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "payment_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "order_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "customer_id": { "$ref": "common.schema.json#/$defs/uuid" },
+            "amount": {
+              "$ref": "common.schema.json#/$defs/money",
+              "description": "Amount captured in this event. Partial capture is permitted by the ledger invariant (sum of captures <= authorized) but the fulfilment saga only ever captures in full."
+            },
+            "captured_total": {
+              "$ref": "common.schema.json#/$defs/money",
+              "description": "Running total captured against this payment after this event. Lets a consumer detect partial capture without replaying the whole topic."
+            },
+            "ledger_entry_id": {
+              "$ref": "common.schema.json#/$defs/uuid",
+              "description": "The append-only ledger row this capture wrote. The audit anchor: given this id, the exact financial record can be produced."
+            },
+            "captured_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          },
+          "required": [
+            "payment_id",
+            "order_id",
+            "customer_id",
+            "amount",
+            "captured_total",
+            "ledger_entry_id",
+            "captured_at"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CGainsWorks/sw-event-driven-microservices/events/schemas/envelope.schema.json",
+  "title": "Event envelope",
+  "description": "Every event on every topic carries these fields. The envelope is the part that infrastructure understands; `data` is the part only the domain understands. Field names follow CloudEvents 1.0 semantics but use snake_case and a flat `data` payload rather than the CloudEvents attribute names, so that one convention holds across JSON events, protobuf messages and database columns. The deviation is deliberate and documented in docs/event_catalogue.md.",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "$ref": "common.schema.json#/$defs/uuid",
+      "description": "Unique identity of this event instance. THE DEDUPLICATION KEY. A redelivery of the same event carries the same event_id; a genuinely new event never reuses one. Consumers record this in processed_events."
+    },
+    "event_type": {
+      "type": "string",
+      "pattern": "^[a-z]+\\.v[0-9]+\\.[A-Za-z]+$",
+      "description": "Fully qualified type, `<context>.v<major>.<Name>`, e.g. orders.v1.OrderPlaced. Consumers dispatch on this."
+    },
+    "event_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Minor revision of the payload within one major version. Incremented when optional fields are added. Consumers must ignore a version higher than they know and read what they recognise."
+    },
+    "occurred_at": {
+      "$ref": "common.schema.json#/$defs/timestamp",
+      "description": "When the fact became true in the domain, set by the producer at the moment of the state change. NOT when it was published, and not when it was consumed. Clock skew between services means this must never be used for ordering; use partition order for that."
+    },
+    "aggregate_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Identity of the aggregate whose state changed. Used as the Kafka message key, which is what guarantees per-aggregate ordering."
+    },
+    "aggregate_type": {
+      "type": "string",
+      "enum": ["order", "payment", "reservation", "notification"],
+      "description": "Which aggregate `aggregate_id` refers to."
+    },
+    "correlation_id": {
+      "$ref": "common.schema.json#/$defs/uuid",
+      "description": "Constant for the whole business transaction. Set once when the order is placed and copied onto every event and command that follows, across every service. Answers 'show me everything that happened because of this order'."
+    },
+    "causation_id": {
+      "$ref": "common.schema.json#/$defs/uuid",
+      "description": "The event_id of the event that directly caused this one, or absent if this event originated from an external request. correlation_id gives the set; causation_id gives the tree."
+    },
+    "producer": {
+      "type": "string",
+      "enum": ["orders", "payments", "inventory", "notifications"],
+      "description": "Service that emitted the event. Present for operational triage, not for routing; consumers must not branch on it."
+    },
+    "data": {
+      "type": "object",
+      "description": "Type-specific payload. Constrained by the per-event schema that composes this envelope."
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "event_version",
+    "occurred_at",
+    "aggregate_id",
+    "aggregate_type",
+    "correlation_id",
+    "producer",
+    "data"
+  ],
+  "additionalProperties": false
+}
