@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Node parity for the Go libs: event envelope, MongoDB outbox, idempotency, Kafka producer and consumer, process plumbing.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "main": "index.mjs",
   "exports": {
     ".": "./index.mjs"

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Event schemas, topic topology and schema registry configuration. The contract every service is held to.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "main": "validate.mjs",
   "exports": {
     ".": "./validate.mjs",

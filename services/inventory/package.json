@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Inventory service. Owns one invariant: available stock is never negative.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "main": "src/index.mjs",
   "scripts": {
     "start": "node src/index.mjs",

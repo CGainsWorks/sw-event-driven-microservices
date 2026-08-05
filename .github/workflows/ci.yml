@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch. A queue of stale runs on an old commit costs
+# minutes and tells nobody anything.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26"
+  NODE_VERSION: "24"
+  BUF_VERSION: "1.58.0"
+
+jobs:
+  # --- the contract -------------------------------------------------------
+  #
+  # Runs first and on its own. If the contract is wrong, nothing built against it is worth
+  # testing, and a red contract job is a far clearer signal than a service failing to
+  # compile three jobs later.
+  contract:
+    name: Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # buf breaking needs history to compare against the merge base.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Event schemas, samples and topic topology
+        # 49 tests: schemas compile, every sample validates, every must-be-rejected case is
+        # rejected at the expected pointer, and schemas/ topics.yml and registry/config.yml
+        # all agree with each other.
+        run: npm test --workspace @sw-edm/events
+
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          github_token: ${{ github.token }}
+
+      - name: Lint protobuf
+        run: buf lint
+        working-directory: proto
+
+      - name: Check protobuf compatibility against the base branch
+        # A breaking change is a new package version served alongside the old one, never an
+        # edit to v1. This is what stops that being decided by accident in review.
+        if: github.event_name == 'pull_request'
+        run: |
+          buf breaking --against \
+            "https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }},subdir=proto"
+        working-directory: proto
+
+  # --- Go ------------------------------------------------------------------
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          github_token: ${{ github.token }}
+
+      - name: Install codegen plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+      - name: Generate
+        # Generated code is not committed, so CI regenerates it from the .proto files. That
+        # is what makes "the generated code cannot be stale" true rather than aspirational.
+        run: buf generate
+        working-directory: proto
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^proto/gen/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests
+        # -race because every service runs several goroutines against shared state: the
+        # relay, the recovery loop and the saga workers. A data race there is a corrupted
+        # order, and it will not reproduce on demand.
+        run: go test ./... -race -count=1
+
+  # --- Node ----------------------------------------------------------------
+  node:
+    name: Node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Tests
+        run: npm test
+
+      - name: Services load and serve the checked-in contract
+        # The Node services read proto/ at runtime rather than generating code from it, so
+        # this asserts the claim directly: the .proto parses and the service definition it
+        # produces has the methods the service implements.
+        run: |
+          node --input-type=module -e "
+            import { loadInventoryProto } from './services/inventory/src/grpc.mjs';
+            const svc = loadInventoryProto().InventoryService.service;
+            const want = ['ReserveStock', 'ReleaseStock', 'CommitReservation', 'GetReservation'];
+            const got = Object.keys(svc);
+            const missing = want.filter((m) => !got.includes(m));
+            if (missing.length) {
+              console.error('missing RPCs:', missing.join(', '));
+              process.exit(1);
+            }
+            console.log('inventory serves:', got.join(', '));
+          "
+
+  # --- the whole thing running --------------------------------------------
+  #
+  # The unit tests above prove the pieces. This proves the system: four services, four
+  # databases, a broker and a schema registry, driven through the real HTTP API.
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    needs: [contract, go, node]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Bring the stack up
+        run: docker compose up -d --build
+
+      - name: Wait for readiness
+        run: |
+          for svc in "orders:18080" "inventory:18082" "notifications:18083"; do
+            name="${svc%%:*}"; port="${svc##*:}"
+            echo "waiting for $name on :$port"
+            for i in $(seq 1 90); do
+              if curl -fsS "http://localhost:$port/health/ready" >/dev/null 2>&1; then
+                echo "  $name ready"
+                break
+              fi
+              if [ "$i" -eq 90 ]; then
+                echo "  $name never became ready"
+                docker compose logs --tail 100 "$name"
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+
+      - name: Integration tests
+        run: go test -tags=integration ./tests/integration/... -count=1 -v
+
+      - name: Logs on failure
+        if: failure()
+        # Without this, a CI-only failure is a red tick and nothing else. Dumping every
+        # service's logs is the difference between diagnosing it and re-running it.
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+# Failure injection is deliberately NOT run here.
+#
+# tests/chaos stops containers, severs docker networks and waits out real outages: it takes
+# tens of minutes and is sensitive to a shared runner's timing, so it would be the flakiest
+# job in the file and would teach people to ignore a red build. It is run on demand with
+# `make chaos`, and its results are written to tests/chaos/results/ by the same command.

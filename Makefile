@@ -96,6 +96,14 @@ lint: proto-lint ## Run every linter
 demo: ## Bring the whole system up and run the demo scenario
 	./scripts/run_demo.sh
 
+.PHONY: test-integration
+test-integration: ## Run integration tests against a running stack
+	go test -tags=integration ./tests/integration/... -count=1 -v
+
+.PHONY: chaos
+chaos: ## Run failure injection (DESTRUCTIVE: stops containers, severs networks)
+	./scripts/run_chaos.sh
+
 .PHONY: up
 up: ## Start every service and its dependencies
 	docker compose up -d --build

@@ -1,0 +1,9 @@
+# Failure injection results land here.
+#
+# The JSON files are generated, not committed: `.gitignore` excludes them so that a stale
+# result can never be mistaken for a fresh one. Regenerate with:
+#
+#     make chaos
+#
+# Every number the README quotes about failure behaviour is read from the file this
+# directory holds after that command runs.
