@@ -31,7 +31,7 @@ help: ## Show this help
 .PHONY: check-tools
 check-tools: ## Verify every required tool is installed
 	@missing=0; \
-	for t in docker go node npm; do \
+	for t in docker go node npm curl jq; do \
 		command -v $$t >/dev/null 2>&1 || { echo "MISSING: $$t"; missing=1; }; \
 	done; \
 	docker compose version >/dev/null 2>&1 || { echo "MISSING: docker compose v2"; missing=1; }; \

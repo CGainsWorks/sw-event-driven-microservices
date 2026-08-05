@@ -88,11 +88,17 @@ show() {
     local title="$1" id="$2"
     echo
     bold "$title"
+    # Nulls dropped: an order that succeeded has no cancellation reason, and printing
+    # "cancellation_reason": null on every happy path is noise that trains the eye to skip
+    # the line that matters when it is not null.
     curl -fsS "$ORDERS/orders/$id" \
-        | jq -c '{state, cancellation_reason, failed_step, payment_id, reservation_id, correlation_id}'
+        | jq -c '{state, cancellation_reason, failed_step, payment_id, reservation_id, correlation_id}
+                 | with_entries(select(.value != null))'
     dim "  saga:"
     curl -fsS "$ORDERS/orders/$id/saga" \
-        | jq -r '.state as $s | "    saga=\($s)", (.steps[] | "    \(.index) \(.name) \(.state) attempts=\(.attempts)\(if .detail != "" then "  \(.detail)" else "" end)")'
+        | jq -r '.state as $s | "    saga=\($s)",
+                 (.steps[] | "    \(.index) \(.name) \(.state) attempts=\(.attempts)" +
+                   (if (.detail // "") != "" then "  \(.detail)" else "" end))'
 }
 
 echo
