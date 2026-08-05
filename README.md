@@ -172,6 +172,7 @@ it got no reply. Guessing there costs a double charge.
 |---|---|---|
 | `events/` | Schemas compile, golden samples validate, must-be-rejected cases are rejected *at the expected pointer*, and `schemas/`, `topics.yml` and `registry/config.yml` agree | **49** |
 | `tests/integration/` | Four services end to end: stock deducted, stock returned after a decline, refusal before any card is touched, no duplicate notifications | **15** |
+| `libs/idempotency/` | Against a real PostgreSQL: 8 concurrent claims on one key run the work **exactly once**, key reuse rejected, stale claims resumable | **8** |
 | `contracts/` | Consumer-driven Pact contracts for the three Kafka pairs, verified against **155 real published events** | **6 + 6** |
 | `tests/chaos/` | The table above | **4** |
 
@@ -264,8 +265,9 @@ deployment that passes the same integration suite as compose.
 - **A test that forces failure at each saga step index.** Steps 0 and 1 are covered by the
   integration and chaos suites; failure at `capture_payment` and `commit_reservation` — the
   expensive paths that produce a refund — are not yet exercised by a test.
-- **Idempotency unit tests** for concurrent duplicate claims and stale-claim resume. The
-  behaviour is exercised end to end but not in isolation.
+- **Idempotency unit tests for the Node implementation.** The Go side is covered in
+  isolation; the Node side is proven only end to end, and its claim uses a different shape
+  that has not been checked against the same races.
 - **Metrics and logs pipelines.** Tracing only.
 
 **Known constraints of what is built:**

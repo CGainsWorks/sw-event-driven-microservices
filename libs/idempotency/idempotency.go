@@ -179,63 +179,98 @@ func Claim(ctx context.Context, tx pgx.Tx, scope, key string, request any, resum
 		return StatusNew, nil, err
 	}
 
-	// ON CONFLICT DO UPDATE rather than DO NOTHING, for two reasons:
+	// Insert-then-lock, rather than a single ON CONFLICT DO UPDATE.
 	//
-	//  1. It always returns a row, so the existing record is read in one round trip.
-	//  2. It takes a row lock, so a concurrent duplicate blocks here until this
-	//     transaction commits and then sees the true state. DO NOTHING neither returns a
-	//     row nor locks, and loses that race.
+	// A single upsert is tempting and was tried. It cannot work, because the row it RETURNS
+	// is the row AFTER the update, so a takeover that sets claimed_at = now() is
+	// indistinguishable from an existing claim that was simply made a moment ago. Both look
+	// recent, and the caller cannot tell "I took this over" from "someone else holds it" —
+	// which is the one distinction that matters.
 	//
-	// The conditional SET is what implements resumption: an in-progress claim older than
-	// the threshold has its claimed_at refreshed, which both marks the takeover and
-	// re-arms the threshold for whoever comes next. A fresh claim is left untouched so
-	// that it is reported as in-progress rather than stolen.
-	//
-	// (xmax = 0) distinguishes an insert from an update: xmax is zero on a freshly
-	// inserted tuple and non-zero on one ON CONFLICT has just locked.
-	const upsert = `
+	// So: INSERT ... DO NOTHING to create the row if it is absent, then SELECT ... FOR
+	// UPDATE, which always locks it and returns the state as it was BEFORE this attempt
+	// touched anything. A concurrent duplicate blocks on that lock until this transaction
+	// resolves and then reads the truth.
+	const insertIfAbsent = `
 		INSERT INTO idempotency_keys (scope, key, request_hash, state)
 		VALUES ($1, $2, $3, 'in_progress')
-		ON CONFLICT (scope, key) DO UPDATE
-		   SET claimed_at = CASE
-		         WHEN idempotency_keys.state = 'in_progress'
-		          AND idempotency_keys.claimed_at < now() - $4::interval
-		         THEN now()
-		         ELSE idempotency_keys.claimed_at
-		       END
-		RETURNING request_hash, state, response, claimed_at, (xmax = 0) AS inserted`
+		ON CONFLICT (scope, key) DO NOTHING`
 
-	var (
-		storedHash string
-		state      string
-		response   []byte
-		claimedAt  time.Time
-		inserted   bool
-	)
-	err = tx.QueryRow(ctx, upsert, scope, key, hash, resumeAfter.String()).
-		Scan(&storedHash, &state, &response, &claimedAt, &inserted)
-	if err != nil {
-		return StatusNew, nil, fmt.Errorf("idempotency: claiming %s/%s: %w", scope, key, err)
-	}
+	// Staleness is decided IN THE DATABASE, not in Go.
+	//
+	// claimed_at is written by PostgreSQL's now(). Comparing it against time.Now() compares
+	// two different clocks, and they disagree: the first version of this compared them and
+	// reported a claim as "-86ms old" against a database in a container. Any skew at all
+	// makes a fresh claim look stale or a stale one look fresh, and the consequence of the
+	// former is two callers resuming the same operation.
+	//
+	// make_interval(secs => ...) rather than a duration string, because Go renders
+	// sub-second durations as "1ns" and PostgreSQL has no nanosecond interval unit — which
+	// parsed fine for the 30s default and failed the moment a test used a short one.
+	const lockExisting = `
+		SELECT request_hash,
+		       state,
+		       response,
+		       (now() - claimed_at) >= make_interval(secs => $3)          AS stale,
+		       EXTRACT(EPOCH FROM (now() - claimed_at))                   AS age_seconds
+		  FROM idempotency_keys
+		 WHERE scope = $1 AND key = $2
+		   FOR UPDATE`
 
-	if inserted {
-		return StatusNew, nil, nil
-	}
-	if storedHash != hash {
-		return StatusNew, nil, fmt.Errorf("%w: scope=%s key=%s", ErrKeyReuse, scope, key)
-	}
-	if state == "completed" {
-		return StatusCompleted, response, nil
-	}
+	// Bounded retry for one narrow race: a concurrent transaction inserted the row, this
+	// one's INSERT therefore did nothing, and then that transaction ROLLED BACK — leaving
+	// no row for the SELECT to find. Rare, and resolved by going round again.
+	for attempt := 0; attempt < 3; attempt++ {
+		tag, err := tx.Exec(ctx, insertIfAbsent, scope, key, hash)
+		if err != nil {
+			return StatusNew, nil, fmt.Errorf("idempotency: claiming %s/%s: %w", scope, key, err)
+		}
+		if tag.RowsAffected() == 1 {
+			return StatusNew, nil, nil
+		}
 
-	// Still in progress. The UPDATE above refreshed claimed_at if and only if the previous
-	// claim was stale, so a claimed_at within the last second means this attempt took it
-	// over. Comparing against the returned timestamp avoids a second round trip.
-	if time.Since(claimedAt) < time.Second {
+		var (
+			storedHash string
+			state      string
+			response   []byte
+			stale      bool
+			ageSeconds float64
+		)
+		err = tx.QueryRow(ctx, lockExisting, scope, key, resumeAfter.Seconds()).
+			Scan(&storedHash, &state, &response, &stale, &ageSeconds)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // the other transaction rolled back; try to insert again
+		}
+		if err != nil {
+			return StatusNew, nil, fmt.Errorf("idempotency: reading claim %s/%s: %w", scope, key, err)
+		}
+
+		if storedHash != hash {
+			return StatusNew, nil, fmt.Errorf("%w: scope=%s key=%s", ErrKeyReuse, scope, key)
+		}
+		if state == "completed" {
+			return StatusCompleted, response, nil
+		}
+
+		// In progress, and the row is locked so nothing can change it underneath us.
+		if !stale {
+			return StatusNew, nil, fmt.Errorf("%w: scope=%s key=%s claimed %s ago",
+				ErrInProgress, scope, key,
+				time.Duration(ageSeconds*float64(time.Second)).Truncate(time.Millisecond))
+		}
+
+		// Stale: the process that claimed it is not coming back. Take it over, and re-arm
+		// the threshold for whoever comes next.
+		if _, err := tx.Exec(ctx,
+			`UPDATE idempotency_keys SET claimed_at = now() WHERE scope = $1 AND key = $2`,
+			scope, key); err != nil {
+			return StatusNew, nil, fmt.Errorf("idempotency: resuming %s/%s: %w", scope, key, err)
+		}
 		return StatusResume, nil, nil
 	}
-	return StatusNew, nil, fmt.Errorf("%w: scope=%s key=%s claimed %s ago",
-		ErrInProgress, scope, key, time.Since(claimedAt).Truncate(time.Millisecond))
+
+	return StatusNew, nil, fmt.Errorf(
+		"idempotency: could not establish a claim on %s/%s after 3 attempts", scope, key)
 }
 
 // Complete records the outcome of a claimed operation.

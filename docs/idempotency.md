@@ -187,6 +187,7 @@ responses and on `StockReservationFailed` and `PaymentFailed` events.
 | `tests/integration` · `TestNotificationIsNotDuplicated` | Still one notification after the system settles |
 | `tests/integration` · `TestTransientFailureIsRetriedNotMemoised` | A transient provider failure is retried, not replayed |
 | `tests/chaos` · network partition | No duplicate payment after a 40s partition and recovery |
+| `libs/idempotency` · unit tests | **8 concurrent claims on one key run the work exactly once**, plus key reuse, clean retry after a rolled-back attempt, release-then-retry, stale-claim resume, and event redelivery |
 
 Responses carry a `deduplicated` flag purely so tests can prove deduplication *happened*
 rather than inferring it from state that would look identical either way.
@@ -202,9 +203,35 @@ rather than inferring it from state that would look identical either way.
 - **No pruning is implemented.** `idempotency_keys` grows without bound. The index on
   `created_at` exists for the sweep; the sweep does not.
 - **Resume is time-based**, with the assumption in §4.
-- **No unit tests in isolation.** The behaviour is proven end to end and under failure
-  injection, but there are no tests for concurrent claims on one key or for the stale-claim
-  path specifically.
+- **The Node implementation has no equivalent unit tests.** The Go side is covered in
+  isolation; the Node side is proven only end to end. Its claim is a single
+  aggregation-pipeline upsert, which does not have the Go version's insert-then-lock shape
+  and has therefore not been checked against the same races.
+
+---
+
+## 9. Two bugs the unit tests found
+
+Written down because both were invisible from the outside and both would have been
+expensive.
+
+**The single upsert could not tell a takeover from a fresh claim.** `Claim` was originally
+one `INSERT ... ON CONFLICT DO UPDATE` whose `RETURNING` gave back the row *after* the
+update. A resumed stale claim sets `claimed_at = now()`, so it looked identical to a claim
+someone else had made a moment earlier — and the caller could not distinguish "I took this
+over" from "someone else holds it". Replaced with insert-then-`SELECT ... FOR UPDATE`, which
+returns the state as it was *before* this attempt touched anything.
+
+**Staleness was decided by comparing two different clocks.** `claimed_at` is written by
+PostgreSQL's `now()`; the check compared it against Go's `time.Now()`. Against a database in
+a container, the test reported a claim as **"-86ms old"**. Any skew makes a fresh claim look
+stale or a stale one look fresh, and the first of those means two callers resuming the same
+operation. The comparison now happens in SQL, where both timestamps come from one clock.
+
+A third, smaller one came with it: durations were passed to PostgreSQL as Go duration
+strings. `"30s"` parses; `"1ns"` does not, because PostgreSQL has no nanosecond interval
+unit. It worked for every default and failed the first time a test used a short one. Now
+`make_interval(secs => ...)`.
 
 ---
 
