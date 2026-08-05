@@ -54,6 +54,7 @@ type orderResponse struct {
 	Total         money  `json:"total_amount"`
 	CorrelationID string `json:"correlation_id"`
 	PaymentID     string `json:"payment_id"`
+	ReservationID string `json:"reservation_id"`
 	Reason        string `json:"cancellation_reason"`
 	FailedStep    string `json:"failed_step"`
 }
@@ -246,12 +247,37 @@ func TestTerminalDeclineCompensates(t *testing.T) {
 	if saga.State != "COMPENSATED" {
 		t.Errorf("saga state = %s, want COMPENSATED", saga.State)
 	}
-	// The first step failed, so there was nothing completed to undo. A compensation that
-	// ran here would mean the saga tried to void an authorization that never existed.
-	for _, s := range saga.Steps {
-		if s.State == "COMPENSATED" {
-			t.Errorf("step %s was compensated, but nothing had succeeded to compensate", s.Name)
+
+	// The shape that must hold for any terminal failure: every step BEFORE the failure is
+	// compensated, the failing step is FAILED, and nothing after it ran at all.
+	//
+	// Compensating the failed step itself would be a bug — there is nothing to undo, and
+	// for authorize_payment specifically it would mean voiding an authorization that was
+	// never granted.
+	failedAt := -1
+	for i, s := range saga.Steps {
+		if s.State == "FAILED" {
+			failedAt = i
+			break
 		}
+	}
+	if failedAt < 0 {
+		t.Fatalf("no step is marked FAILED: %+v", saga.Steps)
+	}
+	for i, s := range saga.Steps {
+		switch {
+		case i < failedAt && s.State != "COMPENSATED":
+			t.Errorf("step %s ran before the failure but is %s, want COMPENSATED", s.Name, s.State)
+		case i > failedAt:
+			t.Errorf("step %s ran after the failure; the saga must stop at the first one", s.Name)
+		}
+	}
+
+	// A terminal decline must not be retried. Two attempts is the observed cost of the
+	// step being marked PENDING and then FAILED; anything much higher would mean the saga
+	// is backing off against a card that will never be approved.
+	if a := saga.Steps[failedAt].Attempts; a > 2 {
+		t.Errorf("failed step was attempted %d times; a terminal decline must not be retried", a)
 	}
 }
 

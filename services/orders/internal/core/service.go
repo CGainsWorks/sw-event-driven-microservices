@@ -29,6 +29,16 @@ type Config struct {
 	LeaseDuration time.Duration
 	RetryBase     time.Duration
 	RetryMax      time.Duration
+
+	// ReservationTTL is the lifetime orders ASKS inventory to apply to a stock hold.
+	// Inventory may shorten it but never extend it, and returns what it actually applied —
+	// only inventory knows its own sweeper interval, and a TTL shorter than that cannot be
+	// honoured.
+	//
+	// It must exceed the worst-case time from reserve_stock to commit_reservation, which is
+	// three step timeouts plus however long the saga spends backing off between them. Set
+	// it too short and healthy sagas fail at the last step with RESERVATION_EXPIRED.
+	ReservationTTL time.Duration
 }
 
 func (c *Config) applyDefaults() {
@@ -46,30 +56,41 @@ func (c *Config) applyDefaults() {
 	if c.RetryMax <= 0 {
 		c.RetryMax = 5 * time.Minute
 	}
+	if c.ReservationTTL <= 0 {
+		// Ten step timeouts. Generous on purpose: an expired reservation cancels an order
+		// that would otherwise have succeeded, so the failure mode of being too short is
+		// far worse than the failure mode of being too long, which is only that a dead
+		// saga's stock takes longer to come back.
+		c.ReservationTTL = 10 * c.StepTimeout
+	}
 }
 
 // Service is the orders domain and the saga orchestrator.
 type Service struct {
-	pool     *pgxpool.Pool
-	payments PaymentsPort
-	log      *slog.Logger
+	pool      *pgxpool.Pool
+	payments  PaymentsPort
+	inventory InventoryPort
+	log       *slog.Logger
 
-	stepTimeout   time.Duration
-	leaseDuration time.Duration
-	retryBase     time.Duration
-	retryMax      time.Duration
+	stepTimeout    time.Duration
+	leaseDuration  time.Duration
+	retryBase      time.Duration
+	retryMax       time.Duration
+	reservationTTL time.Duration
 }
 
-func NewService(pool *pgxpool.Pool, payments PaymentsPort, log *slog.Logger, cfg Config) *Service {
+func NewService(pool *pgxpool.Pool, payments PaymentsPort, inventory InventoryPort, log *slog.Logger, cfg Config) *Service {
 	cfg.applyDefaults()
 	return &Service{
-		pool:          pool,
-		payments:      payments,
-		log:           log.With("component", "orders-core"),
-		stepTimeout:   cfg.StepTimeout,
-		leaseDuration: cfg.LeaseDuration,
-		retryBase:     cfg.RetryBase,
-		retryMax:      cfg.RetryMax,
+		pool:           pool,
+		payments:       payments,
+		inventory:      inventory,
+		log:            log.With("component", "orders-core"),
+		stepTimeout:    cfg.StepTimeout,
+		leaseDuration:  cfg.LeaseDuration,
+		retryBase:      cfg.RetryBase,
+		retryMax:       cfg.RetryMax,
+		reservationTTL: cfg.ReservationTTL,
 	}
 }
 

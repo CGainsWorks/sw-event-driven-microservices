@@ -146,6 +146,52 @@ services:
       retries: 30
       start_period: 20s
 
+  # --- document stores ------------------------------------------------------
+  #
+  # Two instances, not one with two databases. docs/service_boundaries.md claims each
+  # service's store is reachable only by that service, and two Postgres instances already
+  # honour that for orders and payments. One shared Mongo with two logical databases would
+  # make the claim false in the topology while remaining true in the prose.
+  #
+  # Each runs as a SINGLE-NODE REPLICA SET, which looks like ceremony and is not: MongoDB
+  # only offers multi-document transactions on a replica set, and the transactional outbox
+  # is worthless without them. Without a transaction the state change and the outbox
+  # document commit separately, and the whole guarantee collapses back to "publish and
+  # hope". A standalone mongod would make this system quietly incorrect rather than loudly
+  # broken, which is the worse of the two.
+
+  mongo-inventory: &mongo-common
+    image: mongo:8
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all", "--quiet"]
+    healthcheck:
+      # Initiates the replica set on the first probe, then reports its status on every
+      # probe after that. Doing it in the healthcheck rather than an init container avoids
+      # a circular dependency: an init container would need the server healthy, and the
+      # server is not healthy until the set is initiated.
+      test:
+        - CMD-SHELL
+        - >
+          mongosh --quiet --eval "
+            try { rs.status().ok }
+            catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}).ok }
+          " | grep -q 1
+      interval: 3s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - mongo-inventory-data:/data/db
+    ports:
+      - "${INVENTORY_DB_PORT:-27017}:27017"
+
+  mongo-notifications:
+    <<: *mongo-common
+    volumes:
+      - mongo-notifications-data:/data/db
+    ports:
+      - "${NOTIFICATIONS_DB_PORT:-27018}:27017"
+
   # --- services -------------------------------------------------------------
 
   payments:
@@ -201,7 +247,58 @@ services:
     ports:
       - "${ORDERS_HTTP_PORT:-18080}:8080"
 
+  inventory:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: services/Dockerfile.node
+      args:
+        SERVICE: inventory
+    depends_on:
+      mongo-inventory:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      KAFKA_BROKERS: kafka:9092
+      MONGO_URI: mongodb://mongo-inventory:27017/inventory?replicaSet=rs0&directConnection=true
+      MONGO_DB: inventory
+      GRPC_ADDR: 0.0.0.0:50052
+      HTTP_PORT: 8080
+      # Must comfortably exceed the saga's worst-case time from ReserveStock to
+      # CommitReservation, or reservations expire mid-saga and orders are cancelled for no
+      # reason. docs/sagas.md carries the arithmetic; this is the number it refers to.
+      RESERVATION_TTL: ${RESERVATION_TTL:-300s}
+      EXPIRY_SWEEP_INTERVAL: ${EXPIRY_SWEEP_INTERVAL:-5s}
+    ports:
+      - "${INVENTORY_GRPC_PORT:-50052}:50052"
+      - "${INVENTORY_HTTP_PORT:-18082}:8080"
+
+  notifications:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: services/Dockerfile.node
+      args:
+        SERVICE: notifications
+    depends_on:
+      mongo-notifications:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      KAFKA_BROKERS: kafka:9092
+      MONGO_URI: mongodb://mongo-notifications:27017/notifications?replicaSet=rs0&directConnection=true
+      MONGO_DB: notifications
+      HTTP_PORT: 8080
+    ports:
+      - "${NOTIFICATIONS_HTTP_PORT:-18083}:8080"
+
 volumes:
   orders-db:
   payments-db:
   kafka-data:
+  mongo-inventory-data:
+  mongo-notifications-data:

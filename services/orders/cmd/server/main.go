@@ -19,6 +19,7 @@ import (
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/platform"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/core"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/httpapi"
+	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/inventoryclient"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/paymentsclient"
 )
 
@@ -36,10 +37,11 @@ func run() error {
 	log := platform.NewLogger("orders")
 
 	var (
-		httpAddr     = platform.Env("HTTP_ADDR", ":8080")
-		databaseURL  = platform.MustEnv("DATABASE_URL")
-		brokers      = platform.EnvList("KAFKA_BROKERS", "kafka:9092")
-		paymentsGRPC = platform.Env("PAYMENTS_GRPC_ADDR", "payments:50051")
+		httpAddr      = platform.Env("HTTP_ADDR", ":8080")
+		databaseURL   = platform.MustEnv("DATABASE_URL")
+		brokers       = platform.EnvList("KAFKA_BROKERS", "kafka:9092")
+		paymentsGRPC  = platform.Env("PAYMENTS_GRPC_ADDR", "payments:50051")
+		inventoryGRPC = platform.Env("INVENTORY_GRPC_ADDR", "inventory:50052")
 	)
 
 	pool, err := platform.ConnectPostgres(ctx, databaseURL, log, 60*time.Second)
@@ -71,6 +73,16 @@ func run() error {
 		}
 	}()
 
+	inventory, err := inventoryclient.Dial(inventoryGRPC, log)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := inventory.Close(); err != nil {
+			log.Error("closing inventory client", "error", err)
+		}
+	}()
+
 	producer := eventbus.NewProducer(brokers, log)
 	defer func() {
 		if err := producer.Close(); err != nil {
@@ -78,11 +90,12 @@ func run() error {
 		}
 	}()
 
-	svc := core.NewService(pool, payments, log, core.Config{
-		StepTimeout:   platform.EnvDuration("SAGA_STEP_TIMEOUT", 10*time.Second),
-		LeaseDuration: platform.EnvDuration("SAGA_LEASE", 30*time.Second),
-		RetryBase:     platform.EnvDuration("SAGA_RETRY_BASE", 2*time.Second),
-		RetryMax:      platform.EnvDuration("SAGA_RETRY_MAX", 5*time.Minute),
+	svc := core.NewService(pool, payments, inventory, log, core.Config{
+		StepTimeout:    platform.EnvDuration("SAGA_STEP_TIMEOUT", 10*time.Second),
+		LeaseDuration:  platform.EnvDuration("SAGA_LEASE", 30*time.Second),
+		RetryBase:      platform.EnvDuration("SAGA_RETRY_BASE", 2*time.Second),
+		RetryMax:       platform.EnvDuration("SAGA_RETRY_MAX", 5*time.Minute),
+		ReservationTTL: platform.EnvDuration("RESERVATION_TTL", 300*time.Second),
 	})
 
 	relay := outbox.NewRelay(pool, producer, log, outbox.RelayConfig{

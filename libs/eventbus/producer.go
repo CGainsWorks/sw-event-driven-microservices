@@ -50,7 +50,11 @@ func NewProducer(brokers []string, log *slog.Logger) *Producer {
 			// one-partition topic with default retention and no record of why.
 			AllowAutoTopicCreation: false,
 
-			Compression:  kafka.Zstd,
+			// gzip, not zstd. The Node services read these topics with kafkajs, which has
+			// no zstd decoder — see the rationale in events/topics.yml. The broker
+			// recompresses to the topic codec anyway, so this mainly saves compressing
+			// twice.
+			Compression:  kafka.Gzip,
 			WriteTimeout: 10 * time.Second,
 			MaxAttempts:  3,
 		},

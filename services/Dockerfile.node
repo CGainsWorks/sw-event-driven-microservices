@@ -1,0 +1,51 @@
+# Build image shared by both Node services.
+#
+# Build context is the repository root, because these are npm workspaces: a service depends
+# on libs/nodekit and events/, and npm needs the whole workspace to resolve them.
+#
+#   docker build -f services/Dockerfile.node --build-arg SERVICE=inventory .
+
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-alpine AS deps
+WORKDIR /app
+
+# Manifests only, in their own layer. They change far less often than source, so a
+# source-only edit reuses the installed dependency tree instead of reinstalling it.
+COPY package.json package-lock.json ./
+COPY events/package.json events/
+COPY libs/nodekit/package.json libs/nodekit/
+COPY services/inventory/package.json services/inventory/
+COPY services/notifications/package.json services/notifications/
+
+# npm ci, not npm install: it installs exactly the lockfile and fails if the manifests and
+# the lockfile disagree. `npm install` would quietly resolve a newer version, which is how
+# a container ends up running dependencies that were never tested.
+RUN npm ci --omit=dev --no-audit --no-fund
+
+FROM node:${NODE_VERSION}-alpine AS runtime
+ARG SERVICE
+WORKDIR /app
+
+RUN test -n "${SERVICE}" || (echo "SERVICE build arg is required" && exit 1)
+
+ENV NODE_ENV=production
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY events ./events
+COPY libs/nodekit ./libs/nodekit
+COPY services/${SERVICE} ./services/${SERVICE}
+
+# The .proto files are read at runtime by @grpc/proto-loader, so they are part of the
+# image rather than an input to a build step. This is what makes "the service serves the
+# checked-in contract" literally true — there is no generated copy to go stale.
+COPY proto ./proto
+ENV PROTO_ROOT=/app/proto
+
+# Node's own non-root user. Running as root inside a container is a needless privilege for
+# a process that only opens sockets and talks to a database.
+USER node
+
+ENV SERVICE_DIR=/app/services/${SERVICE}
+CMD ["sh", "-c", "node ${SERVICE_DIR}/src/index.mjs"]

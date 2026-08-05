@@ -15,12 +15,48 @@ import (
 // 0 run in reverse. Every step's state is persisted BEFORE the step is attempted, so a
 // crashed orchestrator resumes from the log rather than from a process's memory.
 //
-// Milestone note: this list currently contains only the payment steps. The inventory steps
-// (reserve at the front, commit at the back) are added when the inventory service exists.
-// The engine below does not care how many steps there are, which is the point of it being
-// a list.
+// Step order is deliberate on both passes.
+//
+// Forward: stock is reserved BEFORE payment is authorized, because reserving is cheap and
+// reversible with no customer-visible effect, whereas an authorization appears on a
+// customer's statement. Fail on the cheap, invisible step first.
+//
+// Backward: stock is released LAST, because it is the cheapest thing to keep holding and
+// the most expensive thing to lose. If compensation gets stuck partway, the state it is
+// stuck in should be "we are still holding stock we do not need" rather than "we have
+// released stock but still hold the customer's money".
+//
+// commit_reservation is last and has no compensation. Undoing a deduction means restocking,
+// which is a warehouse operation this system does not model — so there is nothing after it
+// that could fail and require it to be undone.
 func (s *Service) steps() []step {
 	return []step{
+		{
+			name:          "reserve_stock",
+			failureReason: "INSUFFICIENT_STOCK",
+
+			execute: func(ctx context.Context, sc *sagaCtx, key string) (StepOutcome, error) {
+				return s.inventory.Reserve(ctx, ReserveInput{
+					IdempotencyKey: key,
+					OrderID:        sc.order.ID,
+					Lines:          stockLines(sc.order.Lines),
+					TTLSeconds:     uint32(s.reservationTTL.Seconds()),
+					CorrelationID:  sc.order.CorrelationID,
+				})
+			},
+
+			resolve: func(ctx context.Context, sc *sagaCtx, key string) (*StepOutcome, error) {
+				return s.inventory.ResolveReserve(ctx, key)
+			},
+
+			compensate: func(ctx context.Context, sc *sagaCtx, key string) (StepOutcome, error) {
+				return s.inventory.Release(ctx, ReleaseInput{
+					IdempotencyKey: key,
+					ReservationID:  sc.reservationID,
+					CorrelationID:  sc.order.CorrelationID,
+				})
+			},
+		},
 		{
 			name:          "authorize_payment",
 			failureReason: "PAYMENT_DECLINED",
@@ -73,7 +109,39 @@ func (s *Service) steps() []step {
 				})
 			},
 		},
+		{
+			name: "commit_reservation",
+
+			// A reservation that lapsed before the saga got here is refused rather than
+			// committed, because the units may since have been sold to someone else.
+			// RESERVATION_EXPIRED is therefore the right reason to show a customer: the
+			// order failed because the hold ran out, not because stock was never there.
+			failureReason: "RESERVATION_EXPIRED",
+
+			execute: func(ctx context.Context, sc *sagaCtx, key string) (StepOutcome, error) {
+				return s.inventory.Commit(ctx, CommitInput{
+					IdempotencyKey: key,
+					ReservationID:  sc.reservationID,
+					CorrelationID:  sc.order.CorrelationID,
+				})
+			},
+
+			// No compensation. Undoing a deduction means physically restocking, which this
+			// system does not model. It is the last step, so nothing after it can fail and
+			// demand that this one be undone — which is why it is safe to be the step
+			// without a way back.
+		},
 	}
+}
+
+// stockLines strips the price off an order's lines. Inventory is sent what it needs and
+// nothing else; sending it prices would invite something to start depending on them.
+func stockLines(lines []Line) []StockLine {
+	out := make([]StockLine, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, StockLine{SKU: l.SKU, Quantity: l.Quantity})
+	}
+	return out
 }
 
 type step struct {

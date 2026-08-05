@@ -52,7 +52,7 @@ create_topic() {
         --replication-factor "${REPLICATION}" \
         --config "retention.ms=${retention}" \
         --config "cleanup.policy=delete" \
-        --config "compression.type=zstd" \
+        --config "compression.type=gzip" \
         --config "max.message.bytes=1048576" >/dev/null
     echo "  created  ${name}  (${partitions} partitions, retention ${retention}ms)"
 }

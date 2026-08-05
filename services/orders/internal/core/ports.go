@@ -48,6 +48,50 @@ type PaymentsPort interface {
 	ResolveAuthorize(ctx context.Context, idempotencyKey string) (*StepOutcome, error)
 }
 
+// InventoryPort is what the saga needs from inventory. Same shape and same reasoning as
+// PaymentsPort: an interface so the saga can be tested against a fake that returns
+// ErrAmbiguous on demand.
+type InventoryPort interface {
+	Reserve(ctx context.Context, in ReserveInput) (StepOutcome, error)
+	Release(ctx context.Context, in ReleaseInput) (StepOutcome, error)
+	Commit(ctx context.Context, in CommitInput) (StepOutcome, error)
+
+	// ResolveReserve answers "did this reserve request ever reach you?" for a step that
+	// timed out. A nil outcome with a nil error means no: it never arrived, and sending it
+	// again is safe.
+	ResolveReserve(ctx context.Context, idempotencyKey string) (*StepOutcome, error)
+}
+
+// StockLine is a SKU and a quantity as inventory sees it. No price — inventory has no
+// business knowing what anything costs.
+type StockLine struct {
+	SKU      string `json:"sku"`
+	Quantity uint32 `json:"quantity"`
+}
+
+type ReserveInput struct {
+	IdempotencyKey string
+	OrderID        string
+	Lines          []StockLine
+	TTLSeconds     uint32
+	CorrelationID  string
+	CausationID    string
+}
+
+type ReleaseInput struct {
+	IdempotencyKey string
+	ReservationID  string
+	CorrelationID  string
+	CausationID    string
+}
+
+type CommitInput struct {
+	IdempotencyKey string
+	ReservationID  string
+	CorrelationID  string
+	CausationID    string
+}
+
 type AuthorizeInput struct {
 	IdempotencyKey     string
 	OrderID            string

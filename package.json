@@ -1,0 +1,21 @@
+{
+  "name": "sw-event-driven-microservices",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Workspace root. The Go services are a separate module tree; this covers everything Node.",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "events",
+    "libs/nodekit",
+    "services/inventory",
+    "services/notifications"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

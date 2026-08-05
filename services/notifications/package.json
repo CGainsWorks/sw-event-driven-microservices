@@ -1,0 +1,21 @@
+{
+  "name": "@sw-edm/notifications",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Notifications service. A pure downstream consumer: it calls nobody and blocks nothing.",
+  "license": "Apache-2.0",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@sw-edm/events": "1.0.0",
+    "@sw-edm/nodekit": "1.0.0",
+    "mongodb": "6.21.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

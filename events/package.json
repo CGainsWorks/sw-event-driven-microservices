@@ -5,11 +5,17 @@
   "type": "module",
   "description": "Event schemas, topic topology and schema registry configuration. The contract every service is held to.",
   "license": "Apache-2.0",
+  "main": "validate.mjs",
+  "exports": {
+    ".": "./validate.mjs",
+    "./schemas/*": "./schemas/*",
+    "./samples/*": "./samples/*"
+  },
   "scripts": {
     "test": "node --test",
     "validate": "node validate.mjs"
   },
-  "devDependencies": {
+  "dependencies": {
     "ajv": "8.17.1",
     "ajv-formats": "3.0.1",
     "yaml": "2.8.1"

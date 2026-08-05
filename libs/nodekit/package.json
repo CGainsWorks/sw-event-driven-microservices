@@ -1,0 +1,23 @@
+{
+  "name": "@sw-edm/nodekit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Node parity for the Go libs: event envelope, MongoDB outbox, idempotency, Kafka producer and consumer, process plumbing.",
+  "license": "Apache-2.0",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@sw-edm/events": "1.0.0",
+    "kafkajs": "2.2.4",
+    "mongodb": "6.21.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

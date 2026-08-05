@@ -1,0 +1,9 @@
+{
+  "$comment": "Demo catalogue, loaded at startup ONLY when stock_items is empty. This is synthetic data invented for this repository — there is no dataset and no licence to record. Real stock levels would come from a warehouse system, not a file in the repo. The integration and chaos tests set their own levels through PUT /admin/stock rather than depending on these numbers.",
+  "items": [
+    { "sku": "SKU-WIDGET-01", "on_hand": 500 },
+    { "sku": "SKU-GIZMO-07", "on_hand": 40 },
+    { "sku": "SKU-DOODAH-12", "on_hand": 8 },
+    { "sku": "SKU-SCARCE-99", "on_hand": 2 }
+  ]
+}

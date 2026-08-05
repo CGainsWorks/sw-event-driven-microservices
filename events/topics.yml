@@ -24,8 +24,26 @@ defaults:
     cleanup.policy: delete
     retention.ms: 604800000        # 7 days
     min.insync.replicas: 1
-    compression.type: zstd
     max.message.bytes: 1048576     # 1 MiB. Events carrying more than this are a design error.
+
+    # gzip, not zstd.
+    #
+    # zstd is the better codec on every axis that normally matters — smaller output, faster
+    # decompression — and it was the original choice here. It is wrong for this system for
+    # one reason: kafkajs, which the Node services use, has no zstd decoder. A Go producer
+    # writing zstd and a Node consumer reading it fails with
+    # "KafkaJSNotImplemented: ZSTD compression not implemented", and because the broker
+    # recompresses to the topic's codec regardless of what the producer sent, the topic
+    # config decides this, not the producer.
+    #
+    # gzip is implemented natively by both kafka-go and kafkajs with no native dependency
+    # and no plugin, so it works in an Alpine image without a compiler. The cost is larger
+    # messages and more CPU than zstd would use, which at this message size is not
+    # measurable.
+    #
+    # This is the concrete price of a polyglot estate: the usable set of options is the
+    # intersection of what every client library supports, not the union.
+    compression.type: gzip
 
 topics:
   - name: orders.v1.events
