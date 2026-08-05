@@ -129,7 +129,21 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Tests
+        # Includes the Pact CONSUMER tests, which need nothing running: they verify the real
+        # notifications handler against the contract and emit the pact files. Provider
+        # verification is the half that needs a stack, and it runs in the integration job.
         run: npm test
+
+      - name: Upload pacts
+        # The provider job downloads these. Without a Pact Broker this artifact is how a
+        # pact gets from the consumer job to the provider job; the broker is the answer at
+        # team scale, and contracts/README.md says why it is not set up here.
+        uses: actions/upload-artifact@v4
+        with:
+          name: pacts
+          path: contracts/pacts/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Services load and serve the checked-in contract
         # The Node services read proto/ at runtime rather than generating code from it, so
@@ -190,6 +204,18 @@ jobs:
 
       - name: Integration tests
         run: go test -tags=integration ./tests/integration/... -count=1 -v
+
+      - name: Download pacts
+        uses: actions/download-artifact@v5
+        with:
+          name: pacts
+          path: contracts/pacts/
+
+      - name: Verify providers against the contracts
+        # Checks the events the producers ACTUALLY publish to Kafka against what
+        # notifications says it needs — not against a provider-state function written for
+        # the test, which is one more thing that could drift from the real producer.
+        run: go test -tags=contract ./tests/contract/... -count=1 -v
 
       - name: Logs on failure
         if: failure()

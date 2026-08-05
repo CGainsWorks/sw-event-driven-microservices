@@ -1,0 +1,23 @@
+{
+  "name": "@sw-edm/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Consumer-driven contract tests. The consumer states what it needs; the provider proves it supplies it.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test --test-concurrency=1",
+    "consumer": "node --test consumer/*.test.mjs",
+    "provider": "node --test provider/*.test.mjs"
+  },
+  "devDependencies": {
+    "@pact-foundation/pact": "15.0.1"
+  },
+  "dependencies": {
+    "@sw-edm/events": "1.0.0",
+    "@sw-edm/nodekit": "1.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

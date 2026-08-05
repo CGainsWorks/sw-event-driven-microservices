@@ -9,7 +9,8 @@
     "events",
     "libs/nodekit",
     "services/inventory",
-    "services/notifications"
+    "services/notifications",
+    "contracts"
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",

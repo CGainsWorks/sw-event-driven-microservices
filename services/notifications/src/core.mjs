@@ -41,6 +41,48 @@ export const TEMPLATES = {
 export const hashRecipient = (address) =>
   createHash('sha256').update(String(address).trim().toLowerCase()).digest('hex');
 
+/**
+ * Everything this service needs from a consumed event, and nothing else.
+ *
+ * Extracted as its own function because it IS the contract. What notifications requires of
+ * an upstream producer is precisely: an event_type it recognises, a `data.customer_email`
+ * to send to, and a `data.order_id` to file it under. The Pact consumer tests in
+ * `contracts/` target this function directly, so the contract is pinned to real production
+ * code rather than to a description of it that could drift.
+ *
+ * Returns null for an event this service does not act on — which is not an error. Consuming
+ * an event and choosing to do nothing keeps the consumer group's offsets moving, so lag
+ * reflects real backlog rather than events that were never going to be acted on.
+ *
+ * @throws when a templated event is missing a field this service cannot work without.
+ */
+export function describeNotification(envelope) {
+  const template = TEMPLATES[envelope?.event_type];
+  if (!template) return null;
+
+  const recipient = envelope.data?.customer_email;
+  if (!recipient) {
+    // Both templated events require customer_email in their schema, so this is a contract
+    // violation that validation should already have caught. Refusing loudly beats sending
+    // nowhere.
+    throw new Error(`${envelope.event_type} carried no customer_email`);
+  }
+  const orderId = envelope.data?.order_id;
+  if (!orderId) {
+    throw new Error(`${envelope.event_type} carried no order_id`);
+  }
+
+  return {
+    template,
+    recipient,
+    orderId,
+    channel: 'EMAIL',
+    sourceEventId: envelope.event_id,
+    correlationId: envelope.correlation_id,
+    recipientHash: hashRecipient(recipient),
+  };
+}
+
 export async function ensureIndexes(db) {
   await outbox.ensureIndexes(db);
   await idempotency.ensureIndexes(db);
@@ -135,24 +177,19 @@ export class NotificationsService {
    * Returns a short description of what happened, which the consumer logs.
    */
   async handle(envelope) {
-    const template = TEMPLATES[envelope.event_type];
+    // The one function that decides what this service needs from a message. It is what the
+    // Pact consumer tests verify, so the contract cannot drift from the handler.
+    const need = describeNotification(envelope);
 
     // Not a notification-producing event. Mark it seen so the offset advances and move on.
-    if (!template) {
+    if (!need) {
       await this.#inTx(async (session) => {
         await idempotency.seen(this.db, session, envelope.event_id);
       });
       return { action: 'ignored' };
     }
 
-    const channel = 'EMAIL';
-    const recipient = envelope.data?.customer_email;
-    if (!recipient) {
-      // The producer's schema requires customer_email on both templated events, so this
-      // cannot happen without a contract violation that validation should already have
-      // caught. Refusing loudly beats sending nowhere.
-      throw new Error(`${envelope.event_type} carried no customer_email`);
-    }
+    const { template, recipient, channel } = need;
 
     let notificationId = null;
     const claimed = await this.#inTx(async (session) => {

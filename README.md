@@ -172,6 +172,7 @@ it got no reply. Guessing there costs a double charge.
 |---|---|---|
 | `events/` | Schemas compile, golden samples validate, must-be-rejected cases are rejected *at the expected pointer*, and `schemas/`, `topics.yml` and `registry/config.yml` agree | **49** |
 | `tests/integration/` | Four services end to end: stock deducted, stock returned after a decline, refusal before any card is touched, no duplicate notifications | **15** |
+| `contracts/` | Consumer-driven Pact contracts for the three Kafka pairs, verified against **155 real published events** | **6 + 6** |
 | `tests/chaos/` | The table above | **4** |
 
 ---
@@ -255,8 +256,11 @@ deployment that passes the same integration suite as compose.
 
 **Not built yet:**
 
-- **Pact contract tests.** `contracts/` is empty. Consumer-driven contract tests between
-  every service pair are on the checklist and are not done.
+- **Pact for the two gRPC pairs.** The three Kafka pairs have consumer-driven contracts,
+  verified against real published events. `orders → payments` and `orders → inventory` are
+  covered by a shared `.proto` plus `buf breaking` in CI, which is weaker in a specific way:
+  it cannot say *which consumer* a change breaks. Spelled out in
+  [`contracts/README.md`](contracts/README.md#4-the-grpc-gap-stated-plainly).
 - **A test that forces failure at each saga step index.** Steps 0 and 1 are covered by the
   integration and chaos suites; failure at `capture_payment` and `commit_reservation` — the
   expensive paths that produce a refund — are not yet exercised by a test.

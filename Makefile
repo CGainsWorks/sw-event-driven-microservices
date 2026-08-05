@@ -100,6 +100,11 @@ demo: ## Bring the whole system up and run the demo scenario
 test-integration: ## Run integration tests against a running stack
 	go test -tags=integration ./tests/integration/... -count=1 -v
 
+.PHONY: contracts
+contracts: ## Generate consumer pacts, then verify providers against real published events
+	npm test --workspace @sw-edm/contracts
+	go test -tags=contract ./tests/contract/... -count=1 -v
+
 .PHONY: chaos
 chaos: ## Run failure injection (DESTRUCTIVE: stops containers, severs networks)
 	./scripts/run_chaos.sh
