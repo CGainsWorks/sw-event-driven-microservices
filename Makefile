@@ -104,6 +104,25 @@ test-integration: ## Run integration tests against a running stack
 chaos: ## Run failure injection (DESTRUCTIVE: stops containers, severs networks)
 	./scripts/run_chaos.sh
 
+# --- kubernetes -------------------------------------------------------------
+
+.PHONY: kind-up
+kind-up: ## Create a kind cluster and deploy everything to it
+	./scripts/kind_up.sh
+
+.PHONY: kind-down
+kind-down: ## Delete the kind cluster
+	./scripts/kind_up.sh --down
+
+.PHONY: kind-logs
+kind-logs: ## Tail logs from every service in the cluster
+	kubectl -n sw-edm logs -l 'app in (orders,payments,inventory,notifications)' \
+		--all-containers --prefix -f --tail=50
+
+.PHONY: kind-status
+kind-status: ## Show what is running in the cluster
+	kubectl -n sw-edm get pods,svc,job -o wide
+
 .PHONY: up
 up: ## Start every service and its dependencies
 	docker compose up -d --build

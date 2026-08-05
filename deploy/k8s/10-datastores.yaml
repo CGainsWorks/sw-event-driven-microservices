@@ -1,0 +1,249 @@
+# Four datastores, one per service.
+#
+# Separate instances rather than one of each with several logical databases, matching
+# docker-compose.yml and for the same reason: docs/service_boundaries.md claims each
+# service's store is reachable only by that service, and a shared instance would make that
+# claim false in the topology while remaining true in the prose.
+#
+# StatefulSets rather than Deployments — a database needs a stable identity and its own
+# volume, and kind's local-path provisioner supplies the PVC.
+#
+# Credentials are in plain Secrets with hard-coded values. That is acceptable for a local
+# demo cluster and is NOT acceptable anywhere else: a real deployment takes them from an
+# external secret store. Said out loud so nobody copies this into one.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sw-edm
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+  namespace: sw-edm
+type: Opaque
+stringData:
+  orders-password: orders
+  payments-password: payments
+---
+# --- PostgreSQL: orders --------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-orders
+  namespace: sw-edm
+spec:
+  clusterIP: None          # headless: the StatefulSet gets a stable DNS name
+  selector: { app: postgres-orders }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-orders
+  namespace: sw-edm
+spec:
+  serviceName: postgres-orders
+  replicas: 1
+  selector: { matchLabels: { app: postgres-orders } }
+  template:
+    metadata:
+      labels: { app: postgres-orders }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_USER, value: orders }
+            - { name: POSTGRES_DB, value: orders }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-credentials, key: orders-password } }
+            # The data directory must be a SUBDIRECTORY of the mount. A PVC mounted
+            # directly at /var/lib/postgresql/data can contain a lost+found that initdb
+            # refuses to start over.
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            # pg_isready against the specific database and user, not just the port. A
+            # listening port is not a database that will accept a connection.
+            exec: { command: ["pg_isready", "-U", "orders", "-d", "orders"] }
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }
+---
+# --- PostgreSQL: payments ------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-payments
+  namespace: sw-edm
+spec:
+  clusterIP: None
+  selector: { app: postgres-payments }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-payments
+  namespace: sw-edm
+spec:
+  serviceName: postgres-payments
+  replicas: 1
+  selector: { matchLabels: { app: postgres-payments } }
+  template:
+    metadata:
+      labels: { app: postgres-payments }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_USER, value: payments }
+            - { name: POSTGRES_DB, value: payments }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-credentials, key: payments-password } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "payments", "-d", "payments"] }
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }
+---
+# --- MongoDB: inventory --------------------------------------------------------
+#
+# A SINGLE-NODE REPLICA SET, which looks like ceremony and is not. MongoDB only offers
+# multi-document transactions on a replica set, and the transactional outbox is worthless
+# without them: the state change and the outbox document would commit separately, and the
+# whole guarantee collapses back to publish-and-hope.
+#
+# The set is initiated by a startupProbe rather than an init container, because an init
+# container would need the server healthy and the server is not healthy until the set is
+# initiated — a circular dependency. The probe is idempotent: it initiates on the first
+# call and reports status on every one after.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-inventory
+  namespace: sw-edm
+spec:
+  clusterIP: None
+  selector: { app: mongo-inventory }
+  ports: [{ port: 27017, targetPort: 27017 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo-inventory
+  namespace: sw-edm
+spec:
+  serviceName: mongo-inventory
+  replicas: 1
+  selector: { matchLabels: { app: mongo-inventory } }
+  template:
+    metadata:
+      labels: { app: mongo-inventory }
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:8
+          args: ["--replSet", "rs0", "--bind_ip_all", "--quiet"]
+          ports: [{ containerPort: 27017 }]
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  mongosh --quiet --eval "
+                    try { rs.status().ok }
+                    catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}).ok }
+                  " | grep -q 1
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            exec: { command: ["sh", "-c", "mongosh --quiet --eval 'rs.status().ok' | grep -q 1"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 768Mi }
+          volumeMounts: [{ name: data, mountPath: /data/db }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }
+---
+# --- MongoDB: notifications ----------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-notifications
+  namespace: sw-edm
+spec:
+  clusterIP: None
+  selector: { app: mongo-notifications }
+  ports: [{ port: 27017, targetPort: 27017 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo-notifications
+  namespace: sw-edm
+spec:
+  serviceName: mongo-notifications
+  replicas: 1
+  selector: { matchLabels: { app: mongo-notifications } }
+  template:
+    metadata:
+      labels: { app: mongo-notifications }
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:8
+          args: ["--replSet", "rs0", "--bind_ip_all", "--quiet"]
+          ports: [{ containerPort: 27017 }]
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  mongosh --quiet --eval "
+                    try { rs.status().ok }
+                    catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}).ok }
+                  " | grep -q 1
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            exec: { command: ["sh", "-c", "mongosh --quiet --eval 'rs.status().ok' | grep -q 1"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 768Mi }
+          volumeMounts: [{ name: data, mountPath: /data/db }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }

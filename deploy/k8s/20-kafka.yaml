@@ -1,0 +1,139 @@
+# Kafka (KRaft) and topic creation.
+#
+# One broker, because this is a laptop. Every replication setting is therefore 1 — and
+# every one of them is wrong for anything real, where they would be 3 with
+# min.insync.replicas=2, which is the minimum that survives losing a broker without losing
+# an acknowledged write. They are called out individually below rather than left to be
+# discovered.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: sw-edm
+spec:
+  clusterIP: None
+  selector: { app: kafka }
+  ports:
+    - { name: broker, port: 9092, targetPort: 9092 }
+    - { name: controller, port: 9093, targetPort: 9093 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: sw-edm
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector: { matchLabels: { app: kafka } }
+  template:
+    metadata:
+      labels: { app: kafka }
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.9.0
+          env:
+            # KRaft: one process as both broker and controller. No ZooKeeper, which removes
+            # a StatefulSet, a failure mode and a set of version constraints.
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://:9092,CONTROLLER://:9093" }
+            # The pod's stable DNS name. Advertising anything else and clients resolve an
+            # address they cannot reach — the classic Kafka-on-Kubernetes failure, where
+            # metadata succeeds and every produce times out.
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka-0.kafka.sw-edm.svc.cluster.local:9092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-0.kafka.sw-edm.svc.cluster.local:9093" }
+
+            # Single broker, so everything defaulting to 3 comes down to 1. All four of
+            # these are demo-only values.
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_DEFAULT_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_MIN_INSYNC_REPLICAS, value: "1" }
+
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+            # Off, deliberately. Topics come from the Job below with chosen partition
+            # counts; auto-creation would silently produce one-partition topics and destroy
+            # the per-aggregate ordering the whole design depends on.
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+            - { name: CLUSTER_ID, value: "sw-edm-local-cluster-01" }
+          ports:
+            - { containerPort: 9092 }
+            - { containerPort: 9093 }
+          # An expensive startup probe, then a cheap readiness probe.
+          #
+          # kafka-topics.sh starts a whole JVM, which takes several seconds. Running it as
+          # the readiness probe on the default 1s timeout means the probe can NEVER pass —
+          # the broker starts perfectly and the pod sits at 0/1 forever, with the events
+          # saying "command timed out" and the logs saying "Kafka Server started". That is
+          # what happened the first time this was deployed.
+          #
+          # So the real check runs once, at startup, with a timeout that reflects what it
+          # actually costs; thereafter readiness is a TCP connect. A broker that has served
+          # a metadata request once and is still accepting connections is ready, and
+          # spawning a JVM every five seconds to re-prove it is pure waste.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 20
+            failureThreshold: 20
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { memory: 1536Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/kafka/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }
+---
+# Topic creation, as a Job running the same script docker compose uses.
+#
+# The script is idempotent, and the Job has a restartPolicy of OnFailure with backoffLimit,
+# so it simply waits out a broker that is not ready yet rather than needing an init
+# container that duplicates the readiness logic.
+# The kafka-topics-script ConfigMap is NOT defined here.
+#
+# It is created by scripts/kind_up.sh from scripts/create_topics.sh — the same script
+# docker compose runs. One copy of it exists in the repository; a second pasted into a
+# manifest would drift, and the drift would surface as topics with the wrong partition
+# count, which looks like nothing at all until ordering breaks.
+#
+# Defining a placeholder here and overwriting it afterwards was tried and is worse: any
+# later `kubectl apply -f` of this file silently resets the ConfigMap to the placeholder,
+# and the Job then fails with a syntax error nobody expects.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+  namespace: sw-edm
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-topics
+          image: apache/kafka:3.9.0
+          command: ["/bin/sh", "/scripts/create_topics.sh"]
+          env:
+            - { name: KAFKA_BROKERS, value: "kafka-0.kafka.sw-edm.svc.cluster.local:9092" }
+          volumeMounts: [{ name: scripts, mountPath: /scripts }]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: scripts
+          configMap: { name: kafka-topics-script }

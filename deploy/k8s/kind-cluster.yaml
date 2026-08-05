@@ -1,0 +1,39 @@
+# kind cluster for the local deployment.
+#
+#   ./scripts/kind_up.sh
+#
+# One control-plane node and two workers. Two workers rather than one so that pod
+# anti-affinity and multi-replica deployments mean something: on a single node every
+# replica lands in the same place and "it survives losing a node" is untestable.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sw-edm
+
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # Published so the same integration tests that run against docker compose can run
+      # against the cluster without a port-forward. NodePorts are chosen to match the
+      # compose host ports, so ORDERS_BASE_URL and friends do not have to change.
+      - containerPort: 30080   # orders HTTP
+        hostPort: 18080
+        protocol: TCP
+      - containerPort: 30082   # inventory HTTP
+        hostPort: 18082
+        protocol: TCP
+      - containerPort: 30083   # notifications HTTP
+        hostPort: 18083
+        protocol: TCP
+      - containerPort: 30686   # jaeger UI
+        hostPort: 16686
+        protocol: TCP
+
+  - role: worker
+  - role: worker

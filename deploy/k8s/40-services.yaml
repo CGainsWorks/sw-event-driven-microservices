@@ -1,0 +1,261 @@
+# The four services.
+#
+# Images are the ones docker compose builds, loaded into the cluster by
+# scripts/kind_up.sh with `kind load docker-image`. imagePullPolicy is Never so a typo in a
+# tag fails immediately with ErrImageNeverPull rather than the kubelet reaching out to
+# Docker Hub and pulling something unrelated.
+#
+# No init containers waiting on dependencies. Every service already retries its database
+# connection for 60s and treats an unreachable dependency as a retryable condition, so it
+# behaves identically under compose, under Kubernetes and against a database that happens
+# to be restarting. Adding an init container would be a second, different implementation of
+# waiting that could disagree with the first.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service-config
+  namespace: sw-edm
+data:
+  KAFKA_BROKERS: kafka-0.kafka.sw-edm.svc.cluster.local:9092
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector.sw-edm.svc.cluster.local:4317
+  LOG_LEVEL: info
+  OUTBOX_POLL_INTERVAL: 250ms
+  # Must exceed the worst case from reserve_stock to commit_reservation. See the time
+  # budget in docs/sagas.md: too short cancels healthy orders, too long only delays
+  # reclaiming a dead saga's stock, so it is set generously rather than centred.
+  RESERVATION_TTL: 300s
+---
+# --- payments ------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  namespace: sw-edm
+spec:
+  selector: { app: payments }
+  ports:
+    - { name: grpc, port: 50051, targetPort: 50051 }
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: sw-edm
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: payments } }
+  template:
+    metadata:
+      labels: { app: payments }
+    spec:
+      containers:
+        - name: payments
+          image: sw-edm-payments:latest
+          imagePullPolicy: Never
+          envFrom: [{ configMapRef: { name: service-config } }]
+          env:
+            - { name: DATABASE_URL, value: "postgres://payments:payments@postgres-payments-0.postgres-payments.sw-edm.svc.cluster.local:5432/payments?sslmode=disable" }
+            - { name: GRPC_ADDR, value: ":50051" }
+            - { name: HEALTH_ADDR, value: ":8080" }
+          ports:
+            - { containerPort: 50051 }
+            - { containerPort: 8080 }
+          # Native HTTP probes, which need nothing inside the image. This is why the
+          # distroless base with no shell is not a problem here, whereas under compose it
+          # meant no container-side healthcheck was possible at all.
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+# --- inventory -----------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory
+  namespace: sw-edm
+spec:
+  selector: { app: inventory }
+  ports:
+    - { name: grpc, port: 50052, targetPort: 50052 }
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-external
+  namespace: sw-edm
+spec:
+  type: NodePort
+  selector: { app: inventory }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080, nodePort: 30082 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory
+  namespace: sw-edm
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: inventory } }
+  template:
+    metadata:
+      labels: { app: inventory }
+    spec:
+      containers:
+        - name: inventory
+          image: sw-edm-inventory:latest
+          imagePullPolicy: Never
+          envFrom: [{ configMapRef: { name: service-config } }]
+          env:
+            - { name: MONGO_URI, value: "mongodb://mongo-inventory-0.mongo-inventory.sw-edm.svc.cluster.local:27017/inventory?replicaSet=rs0&directConnection=true" }
+            - { name: MONGO_DB, value: inventory }
+            - { name: GRPC_ADDR, value: "0.0.0.0:50052" }
+            - { name: HTTP_PORT, value: "8080" }
+          ports:
+            - { containerPort: 50052 }
+            - { containerPort: 8080 }
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+---
+# --- orders --------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: sw-edm
+spec:
+  selector: { app: orders }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-external
+  namespace: sw-edm
+spec:
+  type: NodePort
+  selector: { app: orders }
+  ports: [{ name: http, port: 8080, targetPort: 8080, nodePort: 30080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: sw-edm
+spec:
+  # One replica, deliberately.
+  #
+  # The saga is safe with several — the lease in saga_instances stops two orchestrators
+  # advancing one saga — but the outbox relay is NOT, unless OUTBOX_SHARDS is set and each
+  # replica is given a distinct OUTBOX_SHARD. Two unsharded relays would publish two events
+  # for one aggregate out of order, silently.
+  #
+  # Scaling this therefore means a StatefulSet with the ordinal fed in as the shard, which
+  # is real work rather than a replica-count change. Left at one, with the reason written
+  # down, rather than set to three and quietly broken.
+  replicas: 1
+  selector: { matchLabels: { app: orders } }
+  template:
+    metadata:
+      labels: { app: orders }
+    spec:
+      containers:
+        - name: orders
+          image: sw-edm-orders:latest
+          imagePullPolicy: Never
+          envFrom: [{ configMapRef: { name: service-config } }]
+          env:
+            - { name: DATABASE_URL, value: "postgres://orders:orders@postgres-orders-0.postgres-orders.sw-edm.svc.cluster.local:5432/orders?sslmode=disable" }
+            - { name: HTTP_ADDR, value: ":8080" }
+            - { name: PAYMENTS_GRPC_ADDR, value: "payments.sw-edm.svc.cluster.local:50051" }
+            - { name: INVENTORY_GRPC_ADDR, value: "inventory.sw-edm.svc.cluster.local:50052" }
+            - { name: SAGA_STEP_TIMEOUT, value: "10s" }
+            - { name: SAGA_RECOVERY_INTERVAL, value: "2s" }
+          ports: [{ containerPort: 8080 }]
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+# --- notifications -------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  namespace: sw-edm
+spec:
+  selector: { app: notifications }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-external
+  namespace: sw-edm
+spec:
+  type: NodePort
+  selector: { app: notifications }
+  ports: [{ name: http, port: 8080, targetPort: 8080, nodePort: 30083 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+  namespace: sw-edm
+spec:
+  # Also one, for the outbox reason above. Its Kafka CONSUMERS would scale fine — that is
+  # what consumer groups are for — but the relay it also runs would not.
+  replicas: 1
+  selector: { matchLabels: { app: notifications } }
+  template:
+    metadata:
+      labels: { app: notifications }
+    spec:
+      containers:
+        - name: notifications
+          image: sw-edm-notifications:latest
+          imagePullPolicy: Never
+          envFrom: [{ configMapRef: { name: service-config } }]
+          env:
+            - { name: MONGO_URI, value: "mongodb://mongo-notifications-0.mongo-notifications.sw-edm.svc.cluster.local:27017/notifications?replicaSet=rs0&directConnection=true" }
+            - { name: MONGO_DB, value: notifications }
+            - { name: HTTP_PORT, value: "8080" }
+          ports: [{ containerPort: 8080 }]
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }

@@ -71,6 +71,23 @@ names exactly what is missing rather than failing halfway through a build.
 
 </details>
 
+### On Kubernetes
+
+```bash
+make kind-up      # create a 3-node kind cluster, build, load, deploy, wait
+make kind-down
+```
+
+Same images, no registry. The NodePorts match the compose host ports, so **the integration
+suite runs against the cluster unchanged** — which is how it was verified:
+
+```
+$ go test -tags=integration ./tests/integration/... -count=1
+ok      .../tests/integration   14.658s
+```
+
+Twelve pods, one command, and tracing works there too.
+
 ---
 
 ## What it does
@@ -205,8 +222,9 @@ libs/
 events/           JSON Schemas, topic topology, registry config, golden samples
 proto/            gRPC contracts (buf)
 tests/            integration/  chaos/
-docs/             service_boundaries.md  event_catalogue.md  sagas.md  tracing.md
-deploy/           otel/
+docs/             service_boundaries.md  event_catalogue.md  sagas.md
+                  idempotency.md  tracing.md
+deploy/           k8s/  otel/
 ```
 
 `events/` is both an npm package and a Go package, on purpose: `go:embed` cannot reach
@@ -221,6 +239,7 @@ outside its own directory, and the alternative was two copies of the schemas tha
 | [**Service boundaries**](docs/service_boundaries.md) | Why these four services, which splits were **rejected**, and what the decomposition costs |
 | [**Event catalogue**](docs/event_catalogue.md) | Every event, the envelope, delivery semantics, versioning rules |
 | [**Sagas**](docs/sagas.md) | Sequence diagrams, the compensation matrix, the time budget |
+| [**Idempotency**](docs/idempotency.md) | Why only *terminal* outcomes are memoised, and the bug that taught it |
 | [**Tracing**](docs/tracing.md) | How context crosses gRPC, Kafka and the outbox |
 
 ---
@@ -231,14 +250,13 @@ Stated plainly, because a README that lists only what works is a brochure.
 
 **Built and demonstrated:** four services, the full four-step saga with compensation,
 transactional outbox, idempotency in both stacks, schema-governed events validated at
-runtime on every publish, end-to-end tracing, and the four failure scenarios above.
+runtime on every publish, end-to-end tracing, the four failure scenarios above, and a kind
+deployment that passes the same integration suite as compose.
 
 **Not built yet:**
 
 - **Pact contract tests.** `contracts/` is empty. Consumer-driven contract tests between
   every service pair are on the checklist and are not done.
-- **Kubernetes.** `deploy/k8s/` is empty; the system runs on docker compose only. The kind
-  manifests are on the checklist.
 - **A test that forces failure at each saga step index.** Steps 0 and 1 are covered by the
   integration and chaos suites; failure at `capture_payment` and `commit_reservation` — the
   expensive paths that produce a refund — are not yet exercised by a test.

@@ -101,7 +101,7 @@ What this buys and what it costs:
 | **Ordering holds per aggregate only.** | Two events for the same `aggregate_id` arrive in order. Two events for different aggregates have no guaranteed relative order, and no consumer may assume one. |
 | **Ordering does not hold across topics.** | `PaymentCaptured` and `StockCommitted` concern one order but live on different topics. A consumer needing both must handle either arriving first. |
 
-Full mechanism and tests: [`idempotency.md`](idempotency.md).
+Full mechanism, the four decisions behind it, and the evidence: [`idempotency.md`](idempotency.md).
 
 ---
 
