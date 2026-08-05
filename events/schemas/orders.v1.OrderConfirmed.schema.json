@@ -23,7 +23,7 @@
             },
             "reservation_id": {
               "$ref": "common.schema.json#/$defs/uuid",
-              "description": "The committed stock reservation."
+              "description": "The committed stock reservation. Optional: an order whose lines require no physical stock has no reservation, and during the incremental build of this system the saga ran its payment steps before the inventory steps existed. Present whenever inventory participated in the order."
             },
             "total_amount": { "$ref": "common.schema.json#/$defs/money" },
             "confirmed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
@@ -33,7 +33,6 @@
             "customer_id",
             "customer_email",
             "payment_id",
-            "reservation_id",
             "total_amount",
             "confirmed_at"
           ],
