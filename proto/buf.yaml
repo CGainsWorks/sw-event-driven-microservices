@@ -1,0 +1,24 @@
+version: v2
+
+modules:
+  - path: .
+
+lint:
+  use:
+    - STANDARD
+  # STANDARD already enforces the things that matter here: package must match directory,
+  # every enum needs a zero value suffixed UNSPECIFIED, RPC request and response types
+  # must be named after their method, services must end in "Service". Those rules exist to
+  # stop exactly the drift this repository is meant to avoid, so none of them are disabled.
+
+breaking:
+  use:
+    - FILE
+  # FILE is the strictest useful setting: it rejects any change that could break a client
+  # compiled against the previous version — removed or renamed fields, changed field
+  # numbers, changed types, removed enum values.
+  #
+  # Enforced in CI against the last commit on main. A genuinely breaking change is a new
+  # package version (sw_edm.payments.v2) served alongside the old one, not an edit to v1.
+  # The same rule as event topics, for the same reason: consumers upgrade on their own
+  # schedule or they do not upgrade at all.

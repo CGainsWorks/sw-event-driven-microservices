@@ -1,0 +1,223 @@
+syntax = "proto3";
+
+package sw_edm.inventory.v1;
+
+import "google/protobuf/timestamp.proto";
+import "sw_edm/common/v1/common.proto";
+
+// Inventory owns one invariant: available stock is never negative, where availability is
+// on_hand minus reserved. Every RPC here either respects that invariant or refuses.
+//
+// ---------------------------------------------------------------------------
+// Business failure is not a transport error
+// ---------------------------------------------------------------------------
+// Every mutating RPC returns OK with an `outcome` enum in the response body when the
+// domain reaches a decision — including a decision the caller did not want, such as
+// insufficient stock. gRPC status codes are reserved for transport and programming
+// faults: unavailable, deadline exceeded, malformed request.
+//
+// The reason is retry policy. A generic interceptor that retries on non-OK status must
+// not retry a request the domain already answered — "there are only two left" will still
+// be true on the second attempt, and retrying it wastes a round trip and muddies the
+// trace. Encoding the domain answer in the body makes "the call worked, the answer was
+// no" distinguishable from "the call did not work", which is exactly the distinction the
+// saga's ambiguous-outcome handling depends on.
+//
+// ---------------------------------------------------------------------------
+// Idempotency
+// ---------------------------------------------------------------------------
+// Every mutating RPC carries an `idempotency_key` chosen by the caller and stable across
+// retries. Calling twice with the same key returns the same answer and changes state at
+// most once. This is what makes the saga safe to retry after a timeout, and it is the
+// reason a *failed* reservation still allocates a reservation_id: the second call must
+// return the same refusal rather than re-running the availability check against stock
+// that has since changed.
+service InventoryService {
+  // Claim stock for an order. Time-limited: the claim lapses at the returned expires_at
+  // unless committed or released first.
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+
+  // Give a claim back. Compensation for ReserveStock. Units become available again and
+  // the stock figures are left as if the reservation had never happened.
+  rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
+
+  // Turn a claim into a deduction. on_hand and reserved both fall, so availability is
+  // unchanged — the units simply stop being ours. This is the last forward step of the
+  // fulfilment saga and the one with no cheap compensation.
+  rpc CommitReservation(CommitReservationRequest) returns (CommitReservationResponse);
+
+  // Read a reservation's current state.
+  //
+  // This exists for one purpose: resolving an ambiguous outcome. When a ReserveStock call
+  // times out, the caller does not know whether the reservation was made. It must not
+  // guess. It calls this with the same idempotency_key and asks the service that owns the
+  // truth. See docs/sagas.md.
+  rpc GetReservation(GetReservationRequest) returns (GetReservationResponse);
+}
+
+// State of a reservation. FAILED is a real, persisted state, not the absence of a record:
+// a refused reservation is remembered so that a retry gets the same refusal.
+enum ReservationState {
+  RESERVATION_STATE_UNSPECIFIED = 0;
+  RESERVATION_STATE_HELD = 1;
+  RESERVATION_STATE_COMMITTED = 2;
+  RESERVATION_STATE_RELEASED = 3;
+  RESERVATION_STATE_EXPIRED = 4;
+  RESERVATION_STATE_FAILED = 5;
+}
+
+// Why stock was released. Recorded so that a release during compensation can be told
+// apart from one caused by the expiry sweeper when reading the history back.
+enum ReleaseReason {
+  RELEASE_REASON_UNSPECIFIED = 0;
+  RELEASE_REASON_COMPENSATION = 1;
+  RELEASE_REASON_ORDER_CANCELLED = 2;
+}
+
+message ReserveStockRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+
+  // Stable across retries of the same logical attempt. Conventionally
+  // "<order_id>:reserve_stock:<attempt>", but inventory treats it as opaque.
+  string idempotency_key = 2;
+
+  string order_id = 3;
+
+  // At least one line. SKUs are unique within a request; a duplicate SKU is
+  // INVALID_ARGUMENT rather than being silently summed, because summing would hide a
+  // caller bug that produces a double reservation.
+  repeated sw_edm.common.v1.StockLine lines = 4;
+
+  // Requested lifetime of the claim. Inventory may shorten it but never extend it, and
+  // returns the value it actually applied. Zero means "use the service default".
+  //
+  // The caller asks rather than dictates because inventory is the only party that knows
+  // its own sweeper interval, and a TTL shorter than that interval cannot be honoured.
+  uint32 ttl_seconds = 5;
+}
+
+message ReserveStockResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+
+    // Claim held. reservation_id, expires_at and state are populated.
+    OUTCOME_RESERVED = 1;
+
+    // One or more SKUs were short. `shortfalls` lists every one of them, not just the
+    // first, so the caller learns everything wrong with the request in one round trip.
+    OUTCOME_INSUFFICIENT_STOCK = 2;
+
+    // A SKU in the request does not exist. Distinct from insufficient stock: this is a
+    // caller error that will never succeed, whereas insufficient stock might.
+    OUTCOME_UNKNOWN_SKU = 3;
+  }
+
+  Outcome outcome = 1;
+
+  // Always populated, including on failure. Inventory allocates the id and records the
+  // attempt before deciding, so that a retry resolves to this same reservation.
+  string reservation_id = 2;
+
+  ReservationState state = 3;
+
+  // Populated when outcome is OUTCOME_RESERVED. This is the effective expiry, which may
+  // be sooner than the requested ttl_seconds implies.
+  google.protobuf.Timestamp expires_at = 4;
+
+  // Populated when outcome is OUTCOME_INSUFFICIENT_STOCK or OUTCOME_UNKNOWN_SKU.
+  repeated sw_edm.common.v1.Shortfall shortfalls = 5;
+
+  // True when this response was served from the idempotency record of an earlier
+  // identical call rather than by doing the work again.
+  //
+  // Purely observational — the caller must behave identically either way. It exists so
+  // that the failure injection tests can prove deduplication actually happened rather
+  // than inferring it from stock levels that would look the same either way.
+  bool deduplicated = 6;
+}
+
+message ReleaseStockRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+  string idempotency_key = 2;
+  string reservation_id = 3;
+  ReleaseReason reason = 4;
+}
+
+message ReleaseStockResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+
+    // Released now, or already released by an earlier call. Both are success: a
+    // compensation that finds its work already done has succeeded, and treating that as
+    // an error would make retrying compensation unsafe.
+    OUTCOME_RELEASED = 1;
+
+    // The reservation was already committed. Releasing it is impossible — the units are
+    // gone. This is a genuine saga bug and the caller must not paper over it.
+    OUTCOME_ALREADY_COMMITTED = 2;
+
+    // No such reservation. Also treated as success by callers compensating a step that
+    // may never have run, but reported distinctly so that the difference is visible in a
+    // trace rather than being guessed at.
+    OUTCOME_NOT_FOUND = 3;
+  }
+
+  Outcome outcome = 1;
+  ReservationState state = 2;
+  bool deduplicated = 3;
+}
+
+message CommitReservationRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+  string idempotency_key = 2;
+  string reservation_id = 3;
+}
+
+message CommitReservationResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+
+    OUTCOME_COMMITTED = 1;
+
+    // The claim lapsed before the saga got here. The units may since have been sold to
+    // someone else, so inventory refuses rather than deducting stock it no longer holds.
+    //
+    // This turns a potential oversell into a cancelled order, which is the correct trade:
+    // an order the customer does not get is recoverable, an oversell is not.
+    OUTCOME_EXPIRED = 2;
+
+    // Released already, by compensation or by a duplicate release. Nothing to commit.
+    OUTCOME_RELEASED = 3;
+
+    OUTCOME_NOT_FOUND = 4;
+  }
+
+  Outcome outcome = 1;
+  ReservationState state = 2;
+  bool deduplicated = 3;
+}
+
+message GetReservationRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+
+  // Look up by reservation_id when it is known, or by idempotency_key when it is not —
+  // which is the case that matters, because a caller resolving a timed-out ReserveStock
+  // never received the reservation_id. Exactly one must be set.
+  oneof lookup {
+    string reservation_id = 2;
+    string idempotency_key = 3;
+  }
+}
+
+message GetReservationResponse {
+  // False when no reservation matches. Distinguished from an error so that "the request
+  // never arrived" is answerable, which is the entire reason this RPC exists.
+  bool found = 1;
+
+  string reservation_id = 2;
+  string order_id = 3;
+  ReservationState state = 4;
+  repeated sw_edm.common.v1.StockLine lines = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  google.protobuf.Timestamp created_at = 7;
+}

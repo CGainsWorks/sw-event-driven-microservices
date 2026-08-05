@@ -1,0 +1,286 @@
+syntax = "proto3";
+
+package sw_edm.payments.v1;
+
+import "google/protobuf/timestamp.proto";
+import "sw_edm/common/v1/common.proto";
+
+// Payments owns the money invariants: captures never exceed the authorized amount,
+// refunds never exceed captures, and one idempotency key maps to one authorization
+// forever. Every state change appends to an immutable ledger; balances are derived from
+// it and never overwritten in place.
+//
+// The same two conventions as InventoryService apply and for the same reasons:
+//
+//   - Business outcomes are an enum in the response body, with gRPC OK. A declined card
+//     is an answer, not a transport failure, and must not be retried by a generic
+//     interceptor.
+//   - Every mutating RPC carries a caller-chosen idempotency_key, stable across retries.
+//
+// Payments is the service where getting this wrong is most expensive, because the failure
+// mode is charging a customer twice. It allocates the payment_id and writes the attempt
+// record BEFORE calling the PSP, so that a retry after a crash mid-call resolves to the
+// existing record rather than starting a second payment.
+service PaymentsService {
+  // Place a hold on funds. Reversible with no customer-visible trace.
+  rpc AuthorizePayment(AuthorizePaymentRequest) returns (AuthorizePaymentResponse);
+
+  // Take the money. Reversible only by refund, which the customer sees on their
+  // statement. Everything before this point can be undone invisibly; nothing after it.
+  rpc CapturePayment(CapturePaymentRequest) returns (CapturePaymentResponse);
+
+  // Release a hold. Compensation for AuthorizePayment.
+  rpc VoidAuthorization(VoidAuthorizationRequest) returns (VoidAuthorizationResponse);
+
+  // Return captured money. Compensation for CapturePayment. Not a rollback — the capture
+  // still happened and stays in the ledger alongside the refund.
+  rpc RefundPayment(RefundPaymentRequest) returns (RefundPaymentResponse);
+
+  // Resolve an ambiguous outcome.
+  //
+  // When AuthorizePayment times out the caller does not know whether a hold was placed.
+  // Assuming failure risks leaking an authorization on a customer's card; assuming
+  // success risks confirming an unpaid order. Both are wrong some of the time, so the
+  // caller asks the service that owns the truth instead. This RPC is what makes "a
+  // timeout is not an outcome" implementable rather than a slogan.
+  rpc GetPaymentByIdempotencyKey(GetPaymentByIdempotencyKeyRequest) returns (GetPaymentByIdempotencyKeyResponse);
+}
+
+// Lifecycle of a payment. FAILED is persisted, not inferred from absence, so a retry of a
+// declined authorization returns the same decline instead of asking the PSP again.
+enum PaymentState {
+  PAYMENT_STATE_UNSPECIFIED = 0;
+  PAYMENT_STATE_AUTHORIZED = 1;
+  PAYMENT_STATE_CAPTURED = 2;
+  PAYMENT_STATE_VOIDED = 3;
+  PAYMENT_STATE_REFUNDED = 4;
+  PAYMENT_STATE_FAILED = 5;
+}
+
+// Why an operation failed.
+//
+// The first four are terminal: the same request will fail the same way for as long as it
+// matters, so a caller must compensate rather than retry. The last two are transient and
+// a caller should back off and try again.
+//
+// Callers must not keep their own copy of that mapping — responses carry an explicit
+// `retryable` field derived from this enum. Two copies of a mapping drift.
+enum FailureCode {
+  FAILURE_CODE_UNSPECIFIED = 0;
+  FAILURE_CODE_INSUFFICIENT_FUNDS = 1;
+  FAILURE_CODE_CARD_DECLINED = 2;
+  FAILURE_CODE_CARD_EXPIRED = 3;
+  FAILURE_CODE_FRAUD_SUSPECTED = 4;
+  FAILURE_CODE_INVALID_REQUEST = 5;
+  FAILURE_CODE_PSP_UNAVAILABLE = 6;
+  FAILURE_CODE_INTERNAL_ERROR = 7;
+}
+
+// Detail attached to any failed operation.
+message Failure {
+  FailureCode code = 1;
+
+  // Whether the identical request could succeed if tried again later. Derived from
+  // `code` by payments and published explicitly so callers do not each maintain their
+  // own version of the rule.
+  bool retryable = 2;
+
+  // Operator-facing text. Never contains a card number, a cardholder name or a PSP token.
+  string detail = 3;
+}
+
+message AuthorizePaymentRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+
+  // Stable across retries. Conventionally "<order_id>:authorize_payment:<attempt>".
+  // One key maps to one authorization forever; this is enforced by a unique index, not
+  // by an application check, because an application check has a race and an index does
+  // not.
+  string idempotency_key = 2;
+
+  string order_id = 3;
+  string customer_id = 4;
+  sw_edm.common.v1.Money amount = 5;
+
+  // Opaque handle for a stored payment instrument. This system never sees, transmits or
+  // stores a card number; the PSP adapter exchanges this token for a charge. Anything
+  // that looks like a PAN reaching this field is a bug in the caller.
+  string payment_method_token = 6;
+}
+
+message AuthorizePaymentResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_AUTHORIZED = 1;
+
+    // The PSP or payments refused. `failure` says why and whether retrying is pointless.
+    OUTCOME_FAILED = 2;
+  }
+
+  Outcome outcome = 1;
+
+  // Always populated, including on failure — the record exists before the PSP is called.
+  string payment_id = 2;
+
+  PaymentState state = 3;
+
+  // Populated when authorized. After this instant the hold lapses at the PSP and
+  // CapturePayment will fail, so the saga must finish before it.
+  google.protobuf.Timestamp expires_at = 4;
+
+  // Populated when outcome is OUTCOME_FAILED.
+  Failure failure = 5;
+
+  bool deduplicated = 6;
+}
+
+message CapturePaymentRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+  string idempotency_key = 2;
+  string payment_id = 3;
+
+  // Amount to capture. Must not exceed the authorized amount minus what is already
+  // captured; that is the ledger invariant and payments enforces it rather than trusting
+  // the caller. The fulfilment saga always captures in full, but partial capture is
+  // representable because the domain genuinely allows it.
+  sw_edm.common.v1.Money amount = 4;
+}
+
+message CapturePaymentResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_CAPTURED = 1;
+
+    // The authorization lapsed before capture. Terminal: the hold is gone and the money
+    // cannot be taken against it.
+    OUTCOME_AUTHORIZATION_EXPIRED = 2;
+
+    // The authorization was voided, so there is nothing to capture.
+    OUTCOME_VOIDED = 3;
+
+    // Would breach the ledger invariant: this capture plus prior captures exceeds the
+    // authorized amount. Always a caller bug.
+    OUTCOME_EXCEEDS_AUTHORIZED = 4;
+
+    OUTCOME_FAILED = 5;
+    OUTCOME_NOT_FOUND = 6;
+  }
+
+  Outcome outcome = 1;
+  string payment_id = 2;
+  PaymentState state = 3;
+
+  // Running total captured against this payment after this call.
+  sw_edm.common.v1.Money captured_total = 4;
+
+  // The append-only ledger row this capture wrote. The audit anchor: given this id the
+  // exact financial record can be produced. Empty when nothing was written.
+  string ledger_entry_id = 5;
+
+  Failure failure = 6;
+  bool deduplicated = 7;
+}
+
+message VoidAuthorizationRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+  string idempotency_key = 2;
+  string payment_id = 3;
+}
+
+message VoidAuthorizationResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+
+    // Voided now, or already voided, or the authorization had already expired. All three
+    // are success: the hold is gone, which is what the caller wanted. A compensation that
+    // finds its work already done has succeeded.
+    OUTCOME_VOIDED = 1;
+
+    // Money has already been captured. A void is impossible and the caller must refund
+    // instead. This means the saga tried to compensate the wrong step, which is a bug
+    // worth failing loudly on rather than silently converting to a refund here.
+    OUTCOME_ALREADY_CAPTURED = 2;
+
+    OUTCOME_NOT_FOUND = 3;
+
+    // The PSP refused or was unavailable. A failed compensation: the saga cannot proceed
+    // and cannot undo. This is the one case the system escalates to a human rather than
+    // resolving automatically.
+    OUTCOME_FAILED = 4;
+  }
+
+  Outcome outcome = 1;
+  PaymentState state = 2;
+  Failure failure = 3;
+  bool deduplicated = 4;
+}
+
+message RefundPaymentRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+  string idempotency_key = 2;
+  string payment_id = 3;
+  sw_edm.common.v1.Money amount = 4;
+
+  // Why the money is going back. SAGA_COMPENSATION is the automated path; the others
+  // exist so the ledger can represent refunds this system did not initiate.
+  RefundReason reason = 5;
+}
+
+enum RefundReason {
+  REFUND_REASON_UNSPECIFIED = 0;
+  REFUND_REASON_SAGA_COMPENSATION = 1;
+  REFUND_REASON_CUSTOMER_REQUESTED = 2;
+  REFUND_REASON_OPERATOR_INITIATED = 3;
+}
+
+message RefundPaymentResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_REFUNDED = 1;
+
+    // Would breach the ledger invariant: refunds would exceed captures.
+    OUTCOME_EXCEEDS_CAPTURED = 2;
+
+    // Nothing was ever captured, so there is nothing to give back.
+    OUTCOME_NOTHING_CAPTURED = 3;
+
+    OUTCOME_NOT_FOUND = 4;
+
+    // As with a failed void: a failed compensation that needs a human.
+    OUTCOME_FAILED = 5;
+  }
+
+  Outcome outcome = 1;
+  PaymentState state = 2;
+  sw_edm.common.v1.Money refunded_total = 3;
+  string ledger_entry_id = 4;
+  Failure failure = 5;
+  bool deduplicated = 6;
+}
+
+message GetPaymentByIdempotencyKeyRequest {
+  sw_edm.common.v1.RequestContext context = 1;
+
+  // The key the caller sent on the request whose outcome it never learned.
+  string idempotency_key = 2;
+}
+
+message GetPaymentByIdempotencyKeyResponse {
+  // False when no payment matches this key — which is the answer that means "the request
+  // never arrived, it is safe to send it again". Distinguished from an RPC error so that
+  // a caller can tell "no such payment" from "I could not ask".
+  bool found = 1;
+
+  string payment_id = 2;
+  string order_id = 3;
+  PaymentState state = 4;
+  sw_edm.common.v1.Money authorized_amount = 5;
+  sw_edm.common.v1.Money captured_total = 6;
+  sw_edm.common.v1.Money refunded_total = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+
+  // Populated when state is PAYMENT_STATE_FAILED, so that a caller resolving a timeout
+  // learns not just that the attempt failed but whether trying again could ever help.
+  Failure failure = 10;
+}

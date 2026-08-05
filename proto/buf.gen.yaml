@@ -1,0 +1,37 @@
+version: v2
+
+# Generated code is NOT committed. `.gitignore` excludes proto/gen/.
+#
+# Committing it invites a diff where the .proto and the generated code disagree with no
+# way to tell which is authoritative. `make proto` regenerates; CI regenerates from
+# scratch and fails if anything differs from what the .proto files imply, so the two
+# cannot drift.
+
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/CGainsWorks/sw-event-driven-microservices/proto/gen/go
+
+plugins:
+  # Local plugins with versions pinned in the Makefile, not remote plugins. Remote
+  # plugins need network access at generate time, which would make `make proto` fail on a
+  # train and make CI depend on a third-party service being up.
+  - local: protoc-gen-go
+    out: gen/go
+    opt: paths=source_relative
+
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt: paths=source_relative
+
+# There is deliberately no Node plugin here.
+#
+# The Node services load these .proto files at runtime with @grpc/proto-loader rather
+# than generating JavaScript from them. That means inventory and notifications are
+# provably serving the contract that is checked into this repository, because they read
+# the file itself — there is no generated artifact that could be stale.
+#
+# The cost is no static types in the Node services and slightly slower start-up while the
+# descriptors are parsed. For two services in plain ESM that is a trade worth making;
+# for a large TypeScript codebase it would not be, and ts-proto would go here.

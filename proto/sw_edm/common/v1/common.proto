@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package sw_edm.common.v1;
+
+// Value objects shared by more than one service contract.
+//
+// These mirror the definitions in events/schemas/common.schema.json. The duplication is
+// deliberate and unavoidable — protobuf and JSON Schema cannot be generated from one
+// another without a third IDL — but the two must agree, and a test in
+// tests/integration asserts that a Money crossing gRPC and a Money on a Kafka event
+// round-trip to the same value.
+
+// A monetary amount in minor units.
+//
+// int64 minor units rather than a float or a decimal string. Money arithmetic on
+// floating point is wrong in ways that only show up in aggregate, and protobuf has no
+// decimal type. 1250 GBP minor units is twelve pounds fifty.
+//
+// Non-negative. Direction is carried by the operation, never by the sign: a refund is a
+// RefundPayment call with a positive amount, not a capture of a negative one.
+message Money {
+  int64 amount_minor = 1;
+
+  // ISO 4217 alphabetic code, uppercase. Validated at the service boundary, not by
+  // protobuf, which has no string constraints.
+  string currency = 2;
+}
+
+// A SKU and a quantity, as inventory sees it.
+//
+// Carries no price. Inventory has no business knowing what anything costs, and giving it
+// a price field would invite someone to start using it.
+message StockLine {
+  string sku = 1;
+  uint32 quantity = 2;
+}
+
+// Why one SKU could not be satisfied.
+message Shortfall {
+  string sku = 1;
+  uint32 requested = 2;
+
+  // Availability observed at the instant of the check. Advisory: by the time the caller
+  // reads it the figure may already be different.
+  uint32 available = 3;
+}
+
+// Metadata that travels with every request.
+//
+// Trace context (`traceparent`, `tracestate`) does NOT belong here — it travels in gRPC
+// metadata, where the OpenTelemetry interceptors put it and find it without any code in
+// this repository having to touch it. What is here is business-level causality, which
+// must survive into the callee's own events and therefore has to be in the message body.
+message RequestContext {
+  // Constant for the whole business transaction, from the moment the order is placed.
+  // The callee copies this onto every event it publishes as a result of this call.
+  string correlation_id = 1;
+
+  // event_id of the event that caused this call, if any. The callee sets causation_id on
+  // its resulting events from this field, which is what makes the causal tree
+  // reconstructable across services.
+  string causation_event_id = 2;
+}
