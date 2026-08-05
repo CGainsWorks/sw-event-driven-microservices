@@ -10,7 +10,7 @@ import { createServer } from 'node:http';
 
 import {
   Producer, Consumer, newLogger, mustEnv, env, envInt, envDuration, envList,
-  connectMongo, shutdownSignal, untilAborted, outbox, schemaValidators,
+  connectMongo, shutdownSignal, untilAborted, outbox, schemaValidators, initTracing,
 } from '@sw-edm/nodekit';
 
 import { NotificationsService, LogSender, ensureIndexes } from './core.mjs';
@@ -31,6 +31,13 @@ const SUBSCRIPTIONS = [
 async function main() {
   const log = newLogger('notifications');
   const signal = shutdownSignal(log);
+
+  // Before anything else that might produce a span.
+  const tracing = initTracing({
+    serviceName: 'notifications',
+    version: env('VERSION', 'dev'),
+    endpoint: env('OTEL_EXPORTER_OTLP_ENDPOINT', ''),
+  }, log);
 
   const mongoUri = mustEnv('MONGO_URI');
   const brokers = envList('KAFKA_BROKERS', ['kafka:9092']);
@@ -96,6 +103,7 @@ async function main() {
   await Promise.allSettled(tasks);
   await producer.disconnect();
   await client.close();
+  await tracing.shutdown();
   log.info('stopped');
 }
 

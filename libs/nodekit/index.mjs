@@ -10,6 +10,21 @@
 export * as platform from './src/platform.mjs';
 export * as idempotency from './src/idempotency.mjs';
 export * as outbox from './src/outbox.mjs';
+export * as telemetry from './src/telemetry.mjs';
+
+export {
+  initTracing,
+  tracer,
+  injectHeaders,
+  extractContext,
+  linkFrom,
+  withSpan,
+  Attr,
+  SpanKind,
+  SpanStatusCode,
+  context,
+  trace,
+} from './src/telemetry.mjs';
 
 export {
   newEnvelope,

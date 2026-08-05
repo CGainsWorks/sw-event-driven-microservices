@@ -9,6 +9,9 @@ import { Kafka, logLevel } from 'kafkajs';
 
 import { assertValid } from './envelope.mjs';
 import { sleep } from './platform.mjs';
+import {
+  extractContext, tracer, context, SpanKind, SpanStatusCode, Attr,
+} from './telemetry.mjs';
 
 /**
  * Marks an error that retrying cannot fix — a malformed payload, an unknown event type, a
@@ -123,6 +126,7 @@ export class Consumer {
     this.log = log.with({ component: 'kafka-consumer', topic, group: groupId });
     this.kafka = client(brokers, clientId, this.log);
     this.consumer = this.kafka.consumer({ groupId });
+    this.tracer = tracer('libs/nodekit/kafka');
   }
 
   async run(handler, signal) {
@@ -190,6 +194,41 @@ export class Consumer {
       offset: message.offset,
     });
 
+    // Continue the trace of the request that CAUSED this event, not the poll that fetched
+    // it. The headers were written at enqueue time by the outbox. Running the whole retry
+    // loop inside this context means any span the handler creates — including the outbox
+    // enqueue of the resulting notification event — hangs off the same trace.
+    const parentCtx = extractContext(headers);
+    await context.with(parentCtx, async () => {
+      await this.#handleWithRetries(topic, partition, message, headers, envelope, handler, signal, log);
+    });
+  }
+
+  async #handleWithRetries(topic, partition, message, headers, envelope, handler, signal, log) {
+    const span = this.tracer.startSpan(`${topic} process`, {
+      kind: SpanKind.CONSUMER,
+      attributes: {
+        'messaging.system': 'kafka',
+        'messaging.destination.name': topic,
+        'messaging.kafka.offset': String(message.offset),
+        'messaging.kafka.partition': partition,
+        [Attr.EventID]: envelope.event_id,
+        [Attr.EventType]: envelope.event_type,
+        [Attr.CorrelationID]: envelope.correlation_id,
+      },
+    });
+
+    // try/finally rather than an end() at every exit: this loop has five ways out, and a
+    // span that is not ended is a span that never reaches the collector — a leak that
+    // shows up as a mysteriously missing consumer rather than as an error.
+    try {
+      await this.#retryLoop(topic, partition, message, headers, envelope, handler, signal, log, span);
+    } finally {
+      span.end();
+    }
+  }
+
+  async #retryLoop(topic, partition, message, headers, envelope, handler, signal, log, span) {
     let backoff = this.retryBackoffMs;
     let lastErr = null;
 
@@ -197,11 +236,14 @@ export class Consumer {
       try {
         await handler(envelope, headers);
         if (attempt > 1) log.info('event handled after retry', { attempts: attempt });
+        span.setAttribute('sw_edm.handler_attempts', attempt);
         return;
       } catch (err) {
         lastErr = err;
         if (err instanceof PermanentError) {
           log.warn('permanent handler failure, dead-lettering without retry', { error: err });
+          span.recordException(err);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: 'dead-lettered' });
           await this.#deadLetter(topic, partition, message, headers, attempt, err);
           return;
         }
@@ -215,6 +257,8 @@ export class Consumer {
     }
 
     log.error('handler exhausted retries, dead-lettering', { attempts: this.maxAttempts, error: lastErr });
+    span.recordException(lastErr);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: 'exhausted retries' });
     await this.#deadLetter(topic, partition, message, headers, this.maxAttempts, lastErr);
   }
 

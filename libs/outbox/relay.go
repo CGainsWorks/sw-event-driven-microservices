@@ -9,6 +9,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 )
 
 // Publisher is what the relay needs from a message broker. Narrow on purpose: the relay is
@@ -64,15 +68,22 @@ func (c *RelayConfig) applyDefaults() {
 
 // Relay moves events from the outbox table to Kafka.
 type Relay struct {
-	pool *pgxpool.Pool
-	pub  Publisher
-	log  *slog.Logger
-	cfg  RelayConfig
+	pool   *pgxpool.Pool
+	pub    Publisher
+	log    *slog.Logger
+	cfg    RelayConfig
+	tracer trace.Tracer
 }
 
 func NewRelay(pool *pgxpool.Pool, pub Publisher, log *slog.Logger, cfg RelayConfig) *Relay {
 	cfg.applyDefaults()
-	return &Relay{pool: pool, pub: pub, log: log.With("component", "outbox-relay"), cfg: cfg}
+	return &Relay{
+		pool:   pool,
+		pub:    pub,
+		log:    log.With("component", "outbox-relay"),
+		cfg:    cfg,
+		tracer: telemetry.Tracer("libs/outbox"),
+	}
 }
 
 // Run polls until the context is cancelled. Intended to be started in its own goroutine
@@ -146,12 +157,36 @@ func (r *Relay) drainOnce(ctx context.Context) (int, error) {
 	// exists to provide.
 	for i := range batch {
 		rec := batch[i]
-		err := r.pub.Publish(ctx, rec.Topic, rec.PartitionKey, rec.Payload, rec.Headers)
+
+		// LINKED to the enqueuing span, not parented to it.
+		//
+		// The publish is caused by the request that enqueued the row, but it is not part
+		// of that request: parenting would make the request's span appear to last until
+		// the relay got round to publishing, which could be minutes and would be a lie
+		// about how long the customer waited. A link records the causal relationship
+		// without distorting the duration.
+		//
+		// The headers travelling to Kafka are the ENQUEUING context, so the eventual
+		// consumer continues the original trace rather than this relay poll.
+		publishCtx, span := r.tracer.Start(ctx, "outbox publish",
+			trace.WithSpanKind(trace.SpanKindProducer),
+			trace.WithLinks(telemetry.LinkFrom(rec.Headers)...),
+			trace.WithAttributes(
+				semconv.MessagingSystemKafka,
+				semconv.MessagingDestinationName(rec.Topic),
+				telemetry.AttrEventID.String(rec.EventID),
+			),
+		)
+
+		err := r.pub.Publish(publishCtx, rec.Topic, rec.PartitionKey, rec.Payload, rec.Headers)
 		if err != nil {
+			telemetry.RecordError(span, err)
+			span.End()
 			publishErr = err
 			failed = &batch[i]
 			break
 		}
+		span.End()
 		publishedIDs = append(publishedIDs, rec.ID)
 	}
 

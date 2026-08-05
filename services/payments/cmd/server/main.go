@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -23,11 +24,17 @@ import (
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/outbox"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/pgmigrate"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/platform"
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 	paymentsv1 "github.com/CGainsWorks/sw-event-driven-microservices/proto/gen/go/sw_edm/payments/v1"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/payments/internal/core"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/payments/internal/grpcapi"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/payments/internal/psp"
 )
+
+// version is stamped at build time by services/Dockerfile (-X main.version). It goes into
+// the trace resource, so a span can be traced back to a commit — which matters the first
+// time two replicas disagree about something.
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -49,6 +56,22 @@ func run() error {
 		brokers     = platform.EnvList("KAFKA_BROKERS", "kafka:9092")
 		authTTL     = platform.EnvDuration("AUTHORIZATION_TTL", 7*24*time.Hour)
 	)
+
+	shutdownTracing, err := telemetry.Init(ctx, log, telemetry.Config{
+		ServiceName: "payments",
+		Version:     version,
+		Endpoint:    platform.Env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Error("shutting down tracing", "error", err)
+		}
+	}()
 
 	pool, err := platform.ConnectPostgres(ctx, databaseURL, log, 60*time.Second)
 	if err != nil {
@@ -83,7 +106,13 @@ func run() error {
 		Shards:       platform.EnvInt("OUTBOX_SHARDS", 1),
 	})
 
-	grpcServer := grpc.NewServer()
+	// otelgrpc as a stats handler rather than an interceptor: it is the supported path and
+	// it sees stream events an interceptor does not. This is what extracts traceparent
+	// from gRPC metadata, so a saga step from orders continues its trace inside payments
+	// with no code in either service touching a header.
+	grpcServer := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
 	paymentsv1.RegisterPaymentsServiceServer(grpcServer, grpcapi.New(svc, log))
 
 	// gRPC health, so that Kubernetes probes and `grpc_health_probe` in the compose

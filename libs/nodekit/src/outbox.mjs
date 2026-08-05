@@ -17,6 +17,7 @@
 
 import { assertValid, topicFor } from './envelope.mjs';
 import { sleep } from './platform.mjs';
+import { injectHeaders, linkFrom, tracer, SpanKind } from './telemetry.mjs';
 
 export const COLLECTION = 'outbox';
 const SEQ_COLLECTION = 'outbox_seq';
@@ -66,6 +67,13 @@ export async function enqueue(db, session, envelope, headers = {}) {
   const topic = topicFor(envelope.event_type);
   const seq = await nextSeq(db, session);
 
+  // Capture trace context HERE, at enqueue time, not at publish time. The relay publishes
+  // this document later — possibly after a restart — and its own context is meaningless to
+  // a consumer. Storing the causing request's context means the consumer continues that
+  // trace instead of starting a fresh root span. Caller-supplied headers win.
+  const traceHeaders = injectHeaders() ?? {};
+  const merged = { ...traceHeaders, ...headers };
+
   await db.collection(COLLECTION).insertOne(
     {
       seq,
@@ -73,7 +81,7 @@ export async function enqueue(db, session, envelope, headers = {}) {
       topic,
       partition_key: envelope.aggregate_id,
       payload: envelope,
-      headers,
+      headers: merged,
       created_at: new Date(),
       published_at: null,
       attempts: 0,
@@ -107,6 +115,7 @@ export class Relay {
     this.maxAttempts = maxAttempts;
     this.shard = shard;
     this.shards = shards;
+    this.tracer = tracer('libs/nodekit/outbox');
   }
 
   /**
@@ -180,6 +189,19 @@ export class Relay {
     // ahead: publishing event N+1 for an aggregate whose event N is stuck would deliver
     // them out of order, which is precisely the guarantee the partition key provides.
     for (const doc of batch) {
+      // LINKED to the enqueuing span, not parented to it: the publish is caused by that
+      // request but is not part of it, and parenting would make the request appear to last
+      // until the relay got round to it. The headers sent to Kafka are the ENQUEUING
+      // context, so the eventual consumer continues the original trace.
+      const span = this.tracer.startSpan(`${doc.topic} publish`, {
+        kind: SpanKind.PRODUCER,
+        links: linkFrom(doc.headers),
+        attributes: {
+          'messaging.system': 'kafka',
+          'messaging.destination.name': doc.topic,
+          'sw_edm.event_id': doc.event_id,
+        },
+      });
       try {
         await this.producer.publish(
           doc.topic,
@@ -189,8 +211,11 @@ export class Relay {
         );
         publishedIds.push(doc._id);
       } catch (err) {
+        span.recordException(err);
         failure = { doc, err };
         break;
+      } finally {
+        span.end();
       }
     }
 

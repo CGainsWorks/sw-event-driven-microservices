@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -33,6 +34,10 @@ type Client struct {
 func Dial(target string, log *slog.Logger) (*Client, error) {
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		// Injects traceparent into gRPC metadata, so the callee's spans become children of
+		// the saga step that called it. This is the whole of the cross-service trace
+		// plumbing for gRPC — neither side reads a header by hand.
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		// No retry policy configured on purpose. Retries are the saga's business: it owns
 		// the idempotency keys, the backoff schedule and the persisted attempt count, and
 		// a transport-level retry underneath it would retry without any of that context.

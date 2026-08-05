@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,10 +11,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/eventbus"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/outbox"
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 )
+
+// orDefault turns a nil map into an empty one, so the column is always valid JSON rather
+// than null. An untraced request stores {} and the saga simply starts its own trace.
+func orDefault(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
+}
 
 const producerName = "orders"
 
@@ -77,6 +89,8 @@ type Service struct {
 	retryBase      time.Duration
 	retryMax       time.Duration
 	reservationTTL time.Duration
+
+	tracer trace.Tracer
 }
 
 func NewService(pool *pgxpool.Pool, payments PaymentsPort, inventory InventoryPort, log *slog.Logger, cfg Config) *Service {
@@ -91,6 +105,7 @@ func NewService(pool *pgxpool.Pool, payments PaymentsPort, inventory InventoryPo
 		retryBase:      cfg.RetryBase,
 		retryMax:       cfg.RetryMax,
 		reservationTTL: cfg.ReservationTTL,
+		tracer:         telemetry.Tracer("services/orders/saga"),
 	}
 }
 
@@ -200,9 +215,16 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Order
 				return fmt.Errorf("orders: inserting line %s: %w", l.SKU, err)
 			}
 		}
+		// Capture the placing request's trace context so every later saga attempt, in this
+		// process or another one after a restart, continues the same trace.
+		traceHeaders, err := json.Marshal(orDefault(telemetry.InjectHeaders(ctx)))
+		if err != nil {
+			return fmt.Errorf("orders: encoding trace headers: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO saga_instances (id, order_id, state, correlation_id)
-			VALUES ($1,$2,'RUNNING',$3)`, uuid.NewString(), o.ID, o.CorrelationID); err != nil {
+			INSERT INTO saga_instances (id, order_id, state, correlation_id, trace_headers)
+			VALUES ($1,$2,'RUNNING',$3,$4)`,
+			uuid.NewString(), o.ID, o.CorrelationID, traceHeaders); err != nil {
 			return fmt.Errorf("orders: creating saga: %w", err)
 		}
 

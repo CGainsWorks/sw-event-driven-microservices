@@ -2,14 +2,17 @@
 #
 #   docker compose up --build
 #
-# Milestone status: orders and payments are implemented. inventory and notifications are
-# not yet built, and are deliberately absent from this file rather than present as empty
-# containers — a service that exists but does nothing is worse than one that is honestly
-# missing.
+# All four services, their four databases, Kafka, a schema registry, an OpenTelemetry
+# collector and Jaeger.
 #
 # Each service has its own database. There is no shared schema, no cross-service SQL, and
-# the two PostgreSQL instances cannot see each other. That is the boundary from
-# docs/service_boundaries.md made real in the topology rather than merely asserted.
+# no two services can see each other's store. That is the boundary from
+# docs/service_boundaries.md made real in the topology rather than merely asserted — which
+# is why there are two PostgreSQL instances and two MongoDB instances rather than one of
+# each with several logical databases.
+#
+# Ports published to the host are for tests and for looking at state by hand during a
+# failure investigation. A real deployment would publish none of them.
 
 name: sw-edm
 
@@ -32,6 +35,9 @@ x-go-service-common: &go-service-common
     LOG_LEVEL: ${LOG_LEVEL:-info}
     KAFKA_BROKERS: kafka:9092
     OUTBOX_POLL_INTERVAL: 250ms
+    # host:port, no scheme — the OTLP gRPC exporter takes an endpoint, not a URL. Unset it
+    # and tracing turns itself off rather than failing to start.
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT:-otel-collector:4317}
 
 services:
   # --- data stores ----------------------------------------------------------
@@ -145,6 +151,37 @@ services:
       timeout: 5s
       retries: 30
       start_period: 20s
+
+  # --- observability --------------------------------------------------------
+  #
+  # Services export OTLP to the collector, never to Jaeger directly. That indirection is
+  # the point of a collector: swapping the backend, adding sampling or adding a second
+  # destination becomes a config change in one place rather than a redeploy of four
+  # services in two languages.
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./deploy/otel/collector.yaml:/etc/otel/config.yaml:ro
+    depends_on:
+      - jaeger
+    ports:
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    restart: unless-stopped
+    ports:
+      # The UI. Open http://localhost:16686 and search by service or by
+      # sw_edm.order_id — see docs/tracing.md.
+      - "${JAEGER_UI_PORT:-16686}:16686"
+    environment:
+      # In-memory storage. Traces are lost on restart, which is correct for a demo and
+      # would not be for anything else.
+      COLLECTOR_OTLP_ENABLED: "true"
 
   # --- document stores ------------------------------------------------------
   #
@@ -264,6 +301,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       MONGO_URI: mongodb://mongo-inventory:27017/inventory?replicaSet=rs0&directConnection=true
       MONGO_DB: inventory
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT:-otel-collector:4317}
       GRPC_ADDR: 0.0.0.0:50052
       HTTP_PORT: 8080
       # Must comfortably exceed the saga's worst-case time from ReserveStock to
@@ -292,6 +330,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       MONGO_URI: mongodb://mongo-notifications:27017/notifications?replicaSet=rs0&directConnection=true
       MONGO_DB: notifications
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT:-otel-collector:4317}
       HTTP_PORT: 8080
     ports:
       - "${NOTIFICATIONS_HTTP_PORT:-18083}:8080"

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import grpc from '@grpc/grpc-js';
 import {
   Producer, newLogger, mustEnv, env, envInt, envDuration,
-  envList, connectMongo, shutdownSignal, untilAborted, sleep, outbox,
+  envList, connectMongo, shutdownSignal, untilAborted, sleep, outbox, initTracing,
 } from '@sw-edm/nodekit';
 import { schemaValidators } from '@sw-edm/nodekit';
 
@@ -26,6 +26,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 async function main() {
   const log = newLogger('inventory');
   const signal = shutdownSignal(log);
+
+  // Before anything else that might produce a span.
+  const tracing = initTracing({
+    serviceName: 'inventory',
+    version: env('VERSION', 'dev'),
+    endpoint: env('OTEL_EXPORTER_OTLP_ENDPOINT', ''),
+  }, log);
 
   const mongoUri = mustEnv('MONGO_URI');
   const grpcAddr = env('GRPC_ADDR', '0.0.0.0:50052');
@@ -100,6 +107,8 @@ async function main() {
   await Promise.allSettled(tasks);
   await producer.disconnect();
   await client.close();
+  // Last, so spans produced during shutdown still get flushed.
+  await tracing.shutdown();
   log.info('stopped');
 }
 

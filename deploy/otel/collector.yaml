@@ -1,0 +1,61 @@
+# OpenTelemetry Collector.
+#
+# Every service exports here rather than to Jaeger directly. The indirection is the point:
+# changing the backend, adding sampling, or fanning out to a second destination becomes a
+# change to this file instead of a redeploy of four services in two languages.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bound memory before the collector becomes the thing that falls over. A collector that
+  # OOMs during an incident takes the evidence with it.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+
+  # Drop attributes that must never leave a service, belt-and-braces behind the services
+  # already not setting them. A rule here is one place to audit; four codebases is four.
+  attributes/scrub:
+    actions:
+      - key: sw_edm.customer_email
+        action: delete
+      - key: payment_method_token
+        action: delete
+      - key: db.statement
+        action: delete
+
+service:
+  # Order matters: memory_limiter first so it can shed load before anything else allocates,
+  # batch last so it batches what actually survived.
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, batch]
+      exporters: [otlp/jaeger, debug]
+
+  telemetry:
+    logs:
+      level: warn
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Off by default. Set verbosity to detailed when a span is not arriving and you need to
+  # know whether the collector never received it or failed to forward it — the two have
+  # completely different causes and look identical from Jaeger.
+  debug:
+    verbosity: basic

@@ -2,11 +2,16 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 )
 
 // The fulfilment saga.
@@ -169,6 +174,45 @@ type sagaCtx struct {
 	paymentMethodToken string
 	currentStep        int
 	state              SagaState
+
+	// traceHeaders is the W3C context captured when the order was placed, so every attempt
+	// continues that trace rather than starting its own.
+	traceHeaders map[string]string
+}
+
+// recordStepOutcome annotates a step span with what the callee said.
+//
+// A business refusal is NOT recorded as a span error. A declined card and an out-of-stock
+// SKU are answers, and marking them as errors would make an error-rate dashboard measure
+// how many customers had insufficient funds rather than how often the system misbehaved.
+// Ambiguous outcomes are marked as errors, because an unresolved outcome genuinely is one.
+func recordStepOutcome(span trace.Span, outcome StepOutcome, err error) {
+	switch {
+	case err != nil && errors.Is(err, ErrAmbiguous):
+		span.SetAttributes(telemetry.AttrStepOutcome.String("unknown"))
+		telemetry.RecordError(span, err)
+	case err != nil:
+		span.SetAttributes(telemetry.AttrStepOutcome.String("transport_error"))
+		telemetry.RecordError(span, err)
+	case outcome.OK:
+		span.SetAttributes(telemetry.AttrStepOutcome.String("ok"))
+	case outcome.Retryable:
+		span.SetAttributes(
+			telemetry.AttrStepOutcome.String("retryable_failure"),
+			attribute.String("sw_edm.step_detail", outcome.Detail),
+		)
+	default:
+		span.SetAttributes(
+			telemetry.AttrStepOutcome.String("terminal_failure"),
+			attribute.String("sw_edm.step_detail", outcome.Detail),
+		)
+	}
+	if outcome.PaymentID != "" {
+		span.SetAttributes(telemetry.AttrPaymentID.String(outcome.PaymentID))
+	}
+	if outcome.ReservationID != "" {
+		span.SetAttributes(telemetry.AttrReservationID.String(outcome.ReservationID))
+	}
 }
 
 // stepKey is the idempotency key sent to the callee for one step.
@@ -197,6 +241,22 @@ func (s *Service) Advance(ctx context.Context, orderID string) error {
 		return err
 	}
 
+	// Rejoin the trace of the request that placed the order.
+	//
+	// The saga is asynchronous and the HTTP span has long since ended, but a span whose
+	// parent has already finished is perfectly legal and is what produces the thing worth
+	// having: ONE trace per order, covering the request, every saga step across three
+	// services, the Kafka publishes and the consumer at the end. Because the context is
+	// persisted rather than held in memory, a saga resumed by the recovery loop after a
+	// restart joins that same trace.
+	ctx = telemetry.ExtractContext(ctx, sc.traceHeaders)
+	ctx, sagaSpan := s.tracer.Start(ctx, "saga advance",
+		trace.WithAttributes(
+			telemetry.AttrOrderID.String(orderID),
+			telemetry.AttrCorrelationID.String(sc.order.CorrelationID),
+		))
+	defer sagaSpan.End()
+
 	log := s.log.With("order_id", orderID, "saga_id", sc.sagaID, "correlation_id", sc.order.CorrelationID)
 	steps := s.steps()
 
@@ -212,9 +272,24 @@ func (s *Service) Advance(ctx context.Context, orderID string) error {
 			return err
 		}
 
-		callCtx, cancel := context.WithTimeout(ctx, s.stepTimeout)
+		// One span per step attempt, carrying the step name, the idempotency key and the
+		// outcome. This is the view that makes a saga debuggable: which step, how long,
+		// what did it answer, and was the answer replayed from a duplicate.
+		stepCtx, stepSpan := s.tracer.Start(ctx, "saga step "+st.name,
+			trace.WithAttributes(
+				telemetry.AttrSagaStep.String(st.name),
+				telemetry.AttrIdempotencyK.String(key),
+				telemetry.AttrOrderID.String(orderID),
+			))
+
+		callCtx, cancel := context.WithTimeout(stepCtx, s.stepTimeout)
 		outcome, err := st.execute(callCtx, sc, key)
 		cancel()
+
+		// Recorded before any of the branching below, so the span reflects what the callee
+		// actually said even on the paths that return early.
+		recordStepOutcome(stepSpan, outcome, err)
+		stepSpan.End()
 
 		if err != nil {
 			if !errors.Is(err, ErrAmbiguous) {
@@ -355,6 +430,7 @@ func (s *Service) claim(ctx context.Context, orderID string) (*sagaCtx, bool, er
 	var sc sagaCtx
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var state string
+		var rawTrace []byte
 		err := tx.QueryRow(ctx, `
 			UPDATE saga_instances
 			   SET next_attempt_at = now() + $2::interval,
@@ -363,8 +439,8 @@ func (s *Service) claim(ctx context.Context, orderID string) (*sagaCtx, bool, er
 			 WHERE order_id = $1
 			   AND state IN ('RUNNING','COMPENSATING')
 			   AND next_attempt_at <= now()
-			RETURNING id, state, current_step`,
-			orderID, s.leaseDuration.String()).Scan(&sc.sagaID, &state, &sc.currentStep)
+			RETURNING id, state, current_step, trace_headers`,
+			orderID, s.leaseDuration.String()).Scan(&sc.sagaID, &state, &sc.currentStep, &rawTrace)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // terminal, or leased by another orchestrator
 		}
@@ -372,6 +448,14 @@ func (s *Service) claim(ctx context.Context, orderID string) (*sagaCtx, bool, er
 			return fmt.Errorf("orders: claiming saga for %s: %w", orderID, err)
 		}
 		sc.state = SagaState(state)
+		if len(rawTrace) > 0 {
+			// A malformed value here must not stop a saga. Tracing is diagnostics; losing
+			// it costs visibility, and refusing to fulfil the order would cost a sale.
+			if err := json.Unmarshal(rawTrace, &sc.traceHeaders); err != nil {
+				s.log.Warn("ignoring unreadable trace headers on saga",
+					"order_id", orderID, "error", err)
+			}
+		}
 
 		order, err := loadOrder(ctx, tx, orderID)
 		if err != nil {

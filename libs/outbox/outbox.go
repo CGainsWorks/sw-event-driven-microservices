@@ -28,6 +28,7 @@ import (
 
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/eventbus"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/pgmigrate"
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 )
 
 // SchemaSQL is the outbox table. Identical in every service, defined once here.
@@ -100,6 +101,22 @@ func Enqueue(ctx context.Context, tx Execer, env *eventbus.Envelope, headers map
 	}
 	if headers == nil {
 		headers = map[string]string{}
+	}
+
+	// Capture trace context HERE, at enqueue time, not at publish time.
+	//
+	// The relay publishes this row later — possibly after a restart, possibly minutes
+	// afterwards — and its own trace context is meaningless to a consumer. Storing the
+	// enqueuing request's context means the consumer continues the trace of the request
+	// that actually caused the event. Without this the trace stops dead at the outbox and
+	// every consumer starts a fresh root span.
+	//
+	// Caller-supplied headers win, so a caller that wants to forward context from
+	// somewhere else can.
+	for k, v := range telemetry.InjectHeaders(ctx) {
+		if _, exists := headers[k]; !exists {
+			headers[k] = v
+		}
 	}
 	encodedHeaders, err := json.Marshal(headers)
 	if err != nil {

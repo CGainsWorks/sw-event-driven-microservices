@@ -203,11 +203,24 @@ CREATE TABLE IF NOT EXISTS saga_step_log (
 );
 `
 
+// TraceHeadersSQL adds the W3C trace context captured when the order was placed.
+//
+// Persisted rather than passed in memory, because the saga is asynchronous and outlives
+// the request that started it. A saga resumed by the recovery loop after a restart — hours
+// later, in a different process — still joins the trace of the request that placed the
+// order. Holding the context in a channel would lose it at exactly the moment a trace is
+// most wanted: when something has gone wrong enough to need recovering.
+const TraceHeadersSQL = `
+ALTER TABLE saga_instances
+    ADD COLUMN IF NOT EXISTS trace_headers JSONB NOT NULL DEFAULT '{}'::jsonb;
+`
+
 // Migrations returns every migration this service needs, in order.
 func Migrations(outbox, idem pgmigrate.Migration) []pgmigrate.Migration {
 	return []pgmigrate.Migration{
 		outbox,
 		idem,
 		{Name: "0003_orders", SQL: SchemaSQL},
+		{Name: "0004_saga_trace_headers", SQL: TraceHeadersSQL},
 	}
 }

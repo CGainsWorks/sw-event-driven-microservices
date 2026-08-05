@@ -11,17 +11,24 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/CGainsWorks/sw-event-driven-microservices/events"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/eventbus"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/idempotency"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/outbox"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/pgmigrate"
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/platform"
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/core"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/httpapi"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/inventoryclient"
 	"github.com/CGainsWorks/sw-event-driven-microservices/services/orders/internal/paymentsclient"
 )
+
+// version is stamped at build time by services/Dockerfile (-X main.version) and goes into
+// the trace resource, so a span can be traced back to a commit.
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -43,6 +50,22 @@ func run() error {
 		paymentsGRPC  = platform.Env("PAYMENTS_GRPC_ADDR", "payments:50051")
 		inventoryGRPC = platform.Env("INVENTORY_GRPC_ADDR", "inventory:50052")
 	)
+
+	shutdownTracing, err := telemetry.Init(ctx, log, telemetry.Config{
+		ServiceName: "orders",
+		Version:     version,
+		Endpoint:    platform.Env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Error("shutting down tracing", "error", err)
+		}
+	}()
 
 	pool, err := platform.ConnectPostgres(ctx, databaseURL, log, 60*time.Second)
 	if err != nil {
@@ -119,8 +142,12 @@ func run() error {
 
 	api := httpapi.New(svc, relay, nudge, log)
 	httpSrv := &http.Server{
-		Addr:              httpAddr,
-		Handler:           api.Handler(),
+		Addr: httpAddr,
+		// otelhttp extracts traceparent from inbound requests, so a caller that already
+		// has a trace continues it here, and starts one otherwise. WithRouteTag keeps the
+		// span name as the route pattern rather than the concrete path, so ten thousand
+		// orders produce one span name instead of ten thousand.
+		Handler:           otelhttp.NewHandler(api.Handler(), "orders"),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

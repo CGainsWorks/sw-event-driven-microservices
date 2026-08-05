@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,6 +30,8 @@ type Client struct {
 func Dial(target string, log *slog.Logger) (*Client, error) {
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		// See paymentsclient: this is what carries traceparent over gRPC metadata.
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		// No transport-level retry policy. Retries belong to the saga, which owns the
 		// idempotency keys, the backoff schedule and the persisted attempt count; a retry
 		// underneath it would repeat the call without any of that.

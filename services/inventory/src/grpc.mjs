@@ -15,6 +15,9 @@ import { fileURLToPath } from 'node:url';
 
 import grpc from '@grpc/grpc-js';
 import protoLoader from '@grpc/proto-loader';
+import {
+  extractContext, tracer, withSpan, context, SpanKind, Attr,
+} from '@sw-edm/nodekit';
 
 import { Outcome, ReservationState } from './core.mjs';
 
@@ -83,17 +86,57 @@ function toStatus(err) {
  * its correlation id. Without the wrapper, an unhandled rejection in a handler takes the
  * whole process down.
  */
+const grpcTracer = tracer('services/inventory/grpc');
+
 function handler(log, name, fn) {
   return async (call, callback) => {
     const correlationId = call.request?.context?.correlation_id;
-    try {
-      const response = await fn(call.request);
-      callback(null, response);
-    } catch (err) {
-      const status = toStatus(err);
-      log.error(`${name} failed`, { error: err, correlation_id: correlationId, code: status.code });
-      callback(status);
+
+    // Extract traceparent from gRPC metadata by hand.
+    //
+    // The Go services get this free from otelgrpc's stats handler. There is no equivalent
+    // for @grpc/grpc-js that works under ESM without a loader hook, so it is done here —
+    // eight lines, and the trace crosses the language boundary. Without it, every span
+    // inventory produces would be a new root and the saga's trace would show a gap exactly
+    // where the interesting work happened.
+    const carrier = {};
+    for (const [k, v] of Object.entries(call.metadata?.getMap?.() ?? {})) {
+      carrier[k] = Array.isArray(v) ? v[0] : String(v);
     }
+    const parentCtx = extractContext(carrier);
+
+    await context.with(parentCtx, async () => {
+      await withSpan(grpcTracer, `InventoryService/${name}`, {
+        kind: SpanKind.SERVER,
+        attributes: {
+          'rpc.system': 'grpc',
+          'rpc.service': 'sw_edm.inventory.v1.InventoryService',
+          'rpc.method': name,
+          [Attr.CorrelationID]: correlationId ?? '',
+          [Attr.IdempotencyKey]: call.request?.idempotency_key ?? '',
+        },
+      }, async (span) => {
+        try {
+          const response = await fn(call.request);
+          // The business outcome as an attribute, NOT as a span error. A refused
+          // reservation is an answer; recording it as an error would make an error-rate
+          // dashboard measure how often customers wanted more than the shop had.
+          if (response?.outcome) span.setAttribute(Attr.Outcome, response.outcome);
+          if (response?.reservation_id) span.setAttribute(Attr.ReservationID, response.reservation_id);
+          if (response?.deduplicated) span.setAttribute(Attr.Deduplicated, true);
+          callback(null, response);
+        } catch (err) {
+          const status = toStatus(err);
+          log.error(`${name} failed`, { error: err, correlation_id: correlationId, code: status.code });
+          callback(status);
+          throw err; // so withSpan records it
+        }
+      }).catch(() => {
+        // Already logged, already answered on the callback, already recorded on the span.
+        // Swallowed here so an RPC failure never becomes an unhandled rejection that takes
+        // the whole process down.
+      });
+    });
   };
 }
 

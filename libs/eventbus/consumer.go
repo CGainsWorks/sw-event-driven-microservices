@@ -10,6 +10,11 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
 )
 
 // Handler processes one event.
@@ -73,6 +78,7 @@ type Consumer struct {
 	dlq    Publisher
 	log    *slog.Logger
 	cfg    ConsumerConfig
+	tracer trace.Tracer
 }
 
 // Publisher is the write side the consumer needs for dead-lettering. Declared here as well
@@ -102,9 +108,10 @@ func NewConsumer(cfg ConsumerConfig, dlq Publisher, log *slog.Logger) *Consumer 
 			// that were read but not yet processed, so a crash would lose them.
 			CommitInterval: 0,
 		}),
-		dlq: dlq,
-		log: log.With("component", "kafka-consumer", "topic", cfg.Topic, "group", cfg.GroupID),
-		cfg: cfg,
+		dlq:    dlq,
+		log:    log.With("component", "kafka-consumer", "topic", cfg.Topic, "group", cfg.GroupID),
+		cfg:    cfg,
+		tracer: telemetry.Tracer("libs/eventbus"),
 	}
 }
 
@@ -154,11 +161,39 @@ func (c *Consumer) process(ctx context.Context, msg kafka.Message, handle Handle
 		headers[h.Key] = string(h.Value)
 	}
 
+	// Continue the trace of the request that CAUSED this event, not the poll that fetched
+	// it. The headers were written at enqueue time by the outbox; see libs/telemetry.
+	//
+	// The handler span is a child of the producing span, so a Jaeger query for one order
+	// shows the HTTP request, the saga steps, the publish and this handler as one trace
+	// across four processes.
+	ctx = telemetry.ExtractContext(ctx, headers)
+	ctx, span := c.tracer.Start(ctx, msg.Topic+" process",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(msg.Topic),
+			// Spelled by hand rather than taken from semconv: the offset helper moved
+			// between semconv versions, and pinning a whole convention package to get one
+			// key is not worth it. The key name is the stable part.
+			attribute.Int64("messaging.kafka.offset", msg.Offset),
+			attribute.Int("messaging.kafka.partition", msg.Partition),
+		),
+	)
+	defer span.End()
+
 	var env Envelope
 	if err := json.Unmarshal(msg.Value, &env); err != nil {
-		c.deadLetter(ctx, msg, headers, 1, fmt.Errorf("payload is not a valid envelope: %w", err))
+		err = fmt.Errorf("payload is not a valid envelope: %w", err)
+		telemetry.RecordError(span, err)
+		c.deadLetter(ctx, msg, headers, 1, err)
 		return
 	}
+	span.SetAttributes(
+		telemetry.AttrEventID.String(env.EventID),
+		telemetry.AttrEventType.String(env.EventType),
+		telemetry.AttrCorrelationID.String(env.CorrelationID),
+	)
 
 	if !c.cfg.SkipValidation {
 		if err := env.Validate(); err != nil {
