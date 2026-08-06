@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/telemetry"
@@ -186,6 +187,24 @@ type sagaCtx struct {
 // SKU are answers, and marking them as errors would make an error-rate dashboard measure
 // how many customers had insufficient funds rather than how often the system misbehaved.
 // Ambiguous outcomes are marked as errors, because an unresolved outcome genuinely is one.
+// classifyStep names what happened, in one word, for both the span attribute and the
+// metric label. One function so the two can never disagree — a dashboard filtered on
+// `outcome=unknown` and a trace search for the same thing must find the same events.
+func classifyStep(outcome StepOutcome, err error) string {
+	switch {
+	case err != nil && errors.Is(err, ErrAmbiguous):
+		return "unknown"
+	case err != nil:
+		return "transport_error"
+	case outcome.OK:
+		return "ok"
+	case outcome.Retryable:
+		return "retryable_failure"
+	default:
+		return "terminal_failure"
+	}
+}
+
 func recordStepOutcome(span trace.Span, outcome StepOutcome, err error) {
 	switch {
 	case err != nil && errors.Is(err, ErrAmbiguous):
@@ -283,13 +302,29 @@ func (s *Service) Advance(ctx context.Context, orderID string) error {
 			))
 
 		callCtx, cancel := context.WithTimeout(stepCtx, s.stepTimeout)
+		startedAt := time.Now()
 		outcome, err := st.execute(callCtx, sc, key)
+		elapsed := time.Since(startedAt)
 		cancel()
 
-		// Recorded before any of the branching below, so the span reflects what the callee
-		// actually said even on the paths that return early.
+		// Recorded before any of the branching below, so the span and the metrics reflect
+		// what the callee actually said even on the paths that return early.
+		result := classifyStep(outcome, err)
 		recordStepOutcome(stepSpan, outcome, err)
 		stepSpan.End()
+
+		if s.metrics.SagaSteps != nil {
+			s.metrics.SagaSteps.Add(ctx, 1, metric.WithAttributes(
+				telemetry.AttrStep.String(st.name),
+				telemetry.AttrOutcome.String(result),
+			))
+		}
+		if s.metrics.SagaStepDuration != nil {
+			// Seconds, and labelled by step: this is the measurement the reservation TTL
+			// has to be set against. See the time budget in docs/sagas.md.
+			s.metrics.SagaStepDuration.Record(ctx, elapsed.Seconds(),
+				metric.WithAttributes(telemetry.AttrStep.String(st.name)))
+		}
 
 		if err != nil {
 			if !errors.Is(err, ErrAmbiguous) {
@@ -399,6 +434,11 @@ func (s *Service) compensate(ctx context.Context, sc *sagaCtx, steps []step, log
 			}
 			log.Error("compensation failed, saga is stuck and needs a human",
 				"step", st.name, "detail", detail)
+			if s.metrics.SagasStuck != nil {
+				// Should always be zero. This is how a human finds out it is not.
+				s.metrics.SagasStuck.Add(ctx, 1,
+					metric.WithAttributes(telemetry.AttrStep.String(st.name)))
+			}
 			return s.markStuck(ctx, sc, fmt.Sprintf("%s compensation: %s", st.name, detail))
 		}
 

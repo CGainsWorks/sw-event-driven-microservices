@@ -1,0 +1,172 @@
+{
+  "__comment": "Provisioned from deploy/grafana/dashboards/fulfilment.json. Edits made in the Grafana UI are discarded on restart — a dashboard that exists only in one person's browser is not a deliverable. Every panel answers a question somebody would ask during an incident; panels that only look busy were left out.",
+  "uid": "sw-edm-fulfilment",
+  "title": "Order fulfilment",
+  "tags": ["sw-edm"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Is the system doing its job?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Orders per minute, by outcome",
+      "description": "Confirmed versus cancelled. The single most useful panel: a rising cancellation rate is the first symptom of almost every failure in this system.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "opm", "custom": { "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "confirmed" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "cancelled" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(sw_edm_orders_terminal_total[1m])) * 60",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Why orders were cancelled",
+      "description": "A rising share of INSUFFICIENT_STOCK is a business problem. A rising share of PAYMENT_ERROR or INTERNAL_ERROR is probably ours. A single 'cancelled' number cannot tell them apart, which is why the reason is a label.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "opm", "custom": { "fillOpacity": 15, "lineWidth": 2, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(sw_edm_orders_terminal_total{outcome=\"cancelled\"}[1m])) * 60",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Is anything wrong?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "stat",
+      "title": "Stuck sagas",
+      "description": "A saga that could not compensate. It can go neither forward nor back, so it stops and waits for a human — this system never resolves that automatically. Should always be zero.",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [{ "expr": "sum(sw_edm_saga_stuck_total)", "refId": "A" }]
+    },
+    {
+      "type": "stat",
+      "title": "Unresolved step outcomes",
+      "description": "Steps whose outcome is genuinely unknown — a call timed out and asking the callee did not settle it. The saga is waiting rather than guessing, which is correct, but a rising count means something is timing out and not recovering.",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [{ "expr": "sum(sw_edm_saga_steps_total{outcome=\"unknown\"})", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox backlog, by service",
+      "description": "Events written but not yet published. A backlog is not an error — it is the outbox absorbing a broker outage, which is what it is for. A backlog that stops FALLING is the problem.",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "fillOpacity": 20, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (service_name) (sw_edm_outbox_pending)",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "The saga",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Saga step outcomes",
+      "description": "Every step attempt, by step and outcome. terminal_failure drives compensation; retryable_failure and unknown mean the saga is waiting. Reading this next to the traces in Jaeger is how a stalled order gets diagnosed.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": {
+        "defaults": { "unit": "opm", "custom": { "fillOpacity": 10, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (saga_step, outcome) (rate(sw_edm_saga_steps_total[1m])) * 60",
+          "legendFormat": "{{saga_step}} · {{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Saga step duration (p95)",
+      "description": "How long each step takes, including its network call. This is the measurement the reservation TTL has to be set against: if the sum of these approaches the TTL, healthy sagas will start failing at commit_reservation. See docs/sagas.md.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, saga_step) (rate(sw_edm_saga_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{saga_step}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Orders accepted",
+      "description": "Orders the API took. NOT sales: nothing is reserved and no money has moved at this point. The denominator for everything above.",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value_and_name" },
+      "targets": [{ "expr": "sum(sw_edm_orders_placed_total)", "legendFormat": "placed", "refId": "A" }]
+    }
+  ]
+}

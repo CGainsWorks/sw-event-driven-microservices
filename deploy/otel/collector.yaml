@@ -44,6 +44,14 @@ service:
       processors: [memory_limiter, attributes/scrub, batch]
       exporters: [otlp/jaeger, debug]
 
+    # Metrics arrive over the same OTLP receiver and leave as a Prometheus endpoint that
+    # Prometheus scrapes. One scrape target rather than four, and the services never learn
+    # that Prometheus exists — swapping it is a change to this file.
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+
   telemetry:
     logs:
       level: warn
@@ -53,6 +61,17 @@ exporters:
     endpoint: jaeger:4317
     tls:
       insecure: true
+
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # The service name becomes a label, so one query can compare orders against payments
+    # instead of needing a separate metric per service.
+    resource_to_telemetry_conversion:
+      enabled: true
+    # Counters keep their value across a collector restart rather than resetting to zero.
+    # Without this a restart looks like a spike of negative rate, which is exactly the
+    # thing an on-call engineer does not need at 3am.
+    enable_open_metrics: true
 
   # Off by default. Set verbosity to detailed when a span is not arriving and you need to
   # know whether the collector never received it or failed to forward it — the two have

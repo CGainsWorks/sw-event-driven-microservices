@@ -207,10 +207,46 @@ What *is* recorded as a span error:
 
 ---
 
-## 7. The pipeline
+## 7. Metrics
+
+Traces answer *what happened to this order*. Metrics answer *is the system doing its job*,
+and the two are deliberately different questions with different instruments.
+
+There are **five** instruments, all domain metrics. Go runtime gauges and CPU are available
+from a dozen exporters and tell you nothing about whether orders are completing. The rule
+applied to each one: it must answer a question somebody would ask during an incident.
+
+| Metric | Answers |
+|---|---|
+| `sw_edm_orders_placed_total` | How many orders were accepted. Not sales — the denominator. |
+| `sw_edm_orders_terminal_total` | Confirmed vs cancelled, **labelled by reason**. A rising share of `INSUFFICIENT_STOCK` is a business problem; a rising share of `PAYMENT_ERROR` is probably ours. |
+| `sw_edm_saga_steps_total` | Step attempts by step and outcome. `unknown` appearing at all is worth a look. |
+| `sw_edm_saga_step_duration_seconds` | What the reservation TTL must be set against — see the time budget in [`sagas.md`](sagas.md#5-the-time-budget). |
+| `sw_edm_saga_stuck_total` | Sagas that could not compensate. Should always be zero. |
+| `sw_edm_outbox_pending` | Events written but not published. A backlog is the outbox absorbing an outage; a backlog that stops **falling** is the problem. |
+
+Two decisions worth stating:
+
+**`outbox_pending` is an observable gauge, not a counter the relay updates.** It is a level,
+not an event, and registering a callback means the number is read from the database rather
+than from a variable that could drift out of step with it.
+
+**There is no separate payments counter.** Payment outcomes already appear on
+`saga_steps_total` as `saga_step=authorize_payment`, measured from the caller's side — which
+is the side that matters. A second counter inside payments would report almost the same
+numbers, disagree at the edges whenever a call was lost in flight, and leave everyone unsure
+which to trust.
+
+`classifyStep` produces the outcome word for both the span attribute and the metric label,
+so a dashboard filtered on `outcome=unknown` and a trace search for the same thing find the
+same events.
+
+## 8. The pipeline
 
 ```
-services ──OTLP/gRPC──► otel-collector ──OTLP/gRPC──► jaeger
+                          ┌──► jaeger        (traces)
+services ──OTLP/gRPC──► otel-collector
+                          └──► :8889 ◄── prometheus ◄── grafana   (metrics)
 ```
 
 Services never export to Jaeger directly. The collector is the indirection that makes
@@ -224,7 +260,15 @@ the same rule repeated in four codebases is not.
 
 ---
 
-## 8. Limitations
+Prometheus scrapes **one** target, the collector, rather than four services. The services
+never learn that Prometheus exists, so replacing it is a change to
+`deploy/otel/collector.yaml` and nothing else.
+
+The Grafana dashboard is provisioned from `deploy/grafana/dashboards/fulfilment.json` with
+`allowUiUpdates: false` — edits made in the browser are discarded on restart. That is the
+point: a dashboard that exists only in one person's browser is not a deliverable.
+
+## 9. Limitations
 
 Stated plainly, because a walkthrough that lists only what works is a demo.
 
@@ -238,8 +282,13 @@ Stated plainly, because a walkthrough that lists only what works is a demo.
   nothing in `libs/nodekit/src/telemetry.mjs` changes.
 - **`outbox publish` spans are in linked traces**, not the order's trace. Explained in §3;
   correct, and still a click.
-- **No metrics and no logs pipeline.** Only tracing. The collector config has one pipeline
-  and adding the others is deliberate future work rather than something half-done.
+- **No logs pipeline.** Traces and metrics go through the collector; logs are still JSON on
+  stdout for whatever collects them.
+- **No alerting rules.** The dashboard shows what would be alerted on — stuck sagas,
+  unresolved outcomes, a backlog that stops falling — but nothing fires.
+- **Prometheus and Jaeger both store in memory**, with a 6-hour retention on Prometheus.
+- **Grafana runs with anonymous Admin access.** Correct for a laptop demo where a login
+  prompt between a reader and a dashboard is pure friction; indefensible anywhere else.
 - **Trace context in `saga_instances` is never pruned.** It is a few hundred bytes per
   order and grows with the table.
 

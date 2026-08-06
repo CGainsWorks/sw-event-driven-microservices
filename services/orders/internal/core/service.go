@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/CGainsWorks/sw-event-driven-microservices/libs/eventbus"
@@ -90,12 +91,13 @@ type Service struct {
 	retryMax       time.Duration
 	reservationTTL time.Duration
 
-	tracer trace.Tracer
+	tracer  trace.Tracer
+	metrics *telemetry.Metrics
 }
 
 func NewService(pool *pgxpool.Pool, payments PaymentsPort, inventory InventoryPort, log *slog.Logger, cfg Config) *Service {
 	cfg.applyDefaults()
-	return &Service{
+	svc := &Service{
 		pool:           pool,
 		payments:       payments,
 		inventory:      inventory,
@@ -107,6 +109,18 @@ func NewService(pool *pgxpool.Pool, payments PaymentsPort, inventory InventoryPo
 		reservationTTL: cfg.ReservationTTL,
 		tracer:         telemetry.Tracer("services/orders/saga"),
 	}
+
+	// Metrics are diagnostics. Refusing to start because an instrument could not be built
+	// would make observability an availability dependency, which is the wrong way round —
+	// so the failure is logged and the service runs with an empty set. Every call site
+	// below is nil-guarded for the same reason.
+	m, err := telemetry.NewMetrics("services/orders")
+	if err != nil {
+		log.Error("metrics unavailable; continuing without them", "error", err)
+		m = &telemetry.Metrics{}
+	}
+	svc.metrics = m
+	return svc
 }
 
 func (s *Service) paymentMethodToken(o *Order) string { return o.PaymentMethodToken }
@@ -246,6 +260,9 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Order
 		return nil, err
 	}
 
+	if s.metrics.OrdersPlaced != nil {
+		s.metrics.OrdersPlaced.Add(ctx, 1)
+	}
 	s.log.Info("order placed",
 		"order_id", o.ID, "correlation_id", o.CorrelationID,
 		"total_minor", o.Total.AmountMinor, "currency", o.Total.Currency, "lines", len(o.Lines))
@@ -282,6 +299,10 @@ func (s *Service) complete(ctx context.Context, sc *sagaCtx) error {
 		}
 		if err := outbox.Enqueue(ctx, tx, env, nil); err != nil {
 			return err
+		}
+		if s.metrics.OrdersTerminal != nil {
+			s.metrics.OrdersTerminal.Add(ctx, 1,
+				metric.WithAttributes(telemetry.AttrOutcome.String("confirmed")))
 		}
 		s.log.Info("order confirmed", "order_id", sc.order.ID, "correlation_id", sc.order.CorrelationID)
 		return nil
@@ -334,6 +355,16 @@ func (s *Service) markCompensated(ctx context.Context, sc *sagaCtx) error {
 		}
 		if err := outbox.Enqueue(ctx, tx, env, nil); err != nil {
 			return err
+		}
+		if s.metrics.OrdersTerminal != nil {
+			// The reason is a label because that is the question: a rising share of
+			// INSUFFICIENT_STOCK is a business problem, a rising share of PAYMENT_ERROR is
+			// probably ours. A single "cancelled" counter cannot tell them apart.
+			s.metrics.OrdersTerminal.Add(ctx, 1, metric.WithAttributes(
+				telemetry.AttrOutcome.String("cancelled"),
+				telemetry.AttrReason.String(reason),
+				telemetry.AttrStep.String(failedStep),
+			))
 		}
 		s.log.Info("order cancelled",
 			"order_id", sc.order.ID, "correlation_id", sc.order.CorrelationID,

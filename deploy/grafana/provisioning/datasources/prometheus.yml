@@ -1,0 +1,25 @@
+# Grafana data sources, provisioned from a file so the dashboard works on first boot.
+#
+# Clicking through a setup wizard is not a deployment step anybody should have to repeat,
+# and a dashboard that needs one is a dashboard that is broken for everyone but its author.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 10s
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    # Lets a spike on a metric panel be followed straight into the traces behind it, which
+    # is the whole reason both are in the same place.
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: ""

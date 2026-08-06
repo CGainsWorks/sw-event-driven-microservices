@@ -1,0 +1,24 @@
+# Prometheus.
+#
+# One scrape target: the OpenTelemetry collector. The services push OTLP to the collector
+# and never learn that Prometheus exists, which is what makes swapping it a change to
+# deploy/otel/collector.yaml rather than a redeploy of four services in two languages.
+
+global:
+  # 10s, matching the services' metric export interval. A scrape slower than the export
+  # interval loses resolution; a scrape faster than it just re-reads the same numbers.
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: sw-edm
+    static_configs:
+      - targets: ["otel-collector:8889"]
+    metric_relabel_configs:
+      # The collector prefixes nothing, so metric names arrive as sw_edm_orders_placed_total
+      # and friends. Left alone deliberately: renaming here would mean the name in a
+      # dashboard no longer matches the name in libs/telemetry/metrics.go, and the next
+      # person would have to learn the mapping.
+      - action: keep
+        regex: "(sw_edm_.*|otelcol_.*|up)"
+        source_labels: [__name__]

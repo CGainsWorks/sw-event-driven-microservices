@@ -52,8 +52,15 @@ successful order, a card declined *after* stock was reserved, an order refused f
 stock, and a flaky payment provider that fails twice and then succeeds. It prints what each
 service reports back rather than asserting success itself.
 
-Then open **<http://localhost:16686>** and search `sw_edm.order_id=<the id it printed>` to
-see one trace covering all four services.
+Then look at what it did:
+
+| | |
+|---|---|
+| **<http://localhost:3000>** | Grafana — orders by outcome, why they were cancelled, saga step outcomes and durations, outbox backlog, stuck sagas |
+| **<http://localhost:16686>** | Jaeger — search `sw_edm.order_id=<the id it printed>` for one trace across all four services |
+| **<http://localhost:9090>** | Prometheus, if you want to write your own query |
+
+Both open straight on something useful; there is no login and no setup step.
 
 <details>
 <summary>Other commands</summary>
@@ -260,10 +267,12 @@ compose. Every item on the brief's build checklist is done.
 
 **Not built yet:**
 
-- **Metrics and logs pipelines.** Tracing only. The collector config has one pipeline and
-  adding the others is deliberate future work rather than something half-done.
+- **A logs pipeline.** Traces and metrics go through the collector; logs are still JSON on
+  stdout for whatever collects them. Adding a third pipeline is bounded work, not done.
 - **No Pact Broker.** Pacts move between CI jobs as an artifact, so there is no versioning
   and no `can-i-deploy`.
+- **No alerting rules.** The dashboard shows what would be alerted on — stuck sagas,
+  unresolved step outcomes, a backlog that stops falling — but nothing fires.
 
 **Known constraints of what is built:**
 

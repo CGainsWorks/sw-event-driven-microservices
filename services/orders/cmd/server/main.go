@@ -59,11 +59,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	shutdownMetrics, err := telemetry.InitMetrics(ctx, log, telemetry.Config{
+		ServiceName: "orders",
+		Version:     version,
+		Endpoint:    platform.Env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+	})
+	if err != nil {
+		return err
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownTracing(shutdownCtx); err != nil {
 			log.Error("shutting down tracing", "error", err)
+		}
+		// Flushed last so counters incremented during shutdown are not lost.
+		if err := shutdownMetrics(shutdownCtx); err != nil {
+			log.Error("shutting down metrics", "error", err)
 		}
 	}()
 
@@ -127,6 +139,14 @@ func run() error {
 		Shard:        platform.EnvInt("OUTBOX_SHARD", 0),
 		Shards:       platform.EnvInt("OUTBOX_SHARDS", 1),
 	})
+
+	// The outbox backlog is read from the database on every collection rather than tracked
+	// in a variable, so the number cannot drift out of step with what is actually pending.
+	if m, err := telemetry.NewMetrics("services/orders"); err == nil {
+		if err := m.ObserveOutboxPending("services/orders", relay.PendingCount); err != nil {
+			log.Error("outbox gauge unavailable", "error", err)
+		}
+	}
 
 	// The nudge queue advances a saga immediately after its order is placed instead of
 	// waiting for the recovery loop's next tick. Buffered and non-blocking: dropping a

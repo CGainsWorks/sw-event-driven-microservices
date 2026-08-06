@@ -65,11 +65,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	shutdownMetrics, err := telemetry.InitMetrics(ctx, log, telemetry.Config{
+		ServiceName: "payments",
+		Version:     version,
+		Endpoint:    platform.Env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+	})
+	if err != nil {
+		return err
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownTracing(shutdownCtx); err != nil {
 			log.Error("shutting down tracing", "error", err)
+		}
+		if err := shutdownMetrics(shutdownCtx); err != nil {
+			log.Error("shutting down metrics", "error", err)
 		}
 	}()
 
@@ -110,6 +121,15 @@ func run() error {
 	// it sees stream events an interceptor does not. This is what extracts traceparent
 	// from gRPC metadata, so a saga step from orders continues its trace inside payments
 	// with no code in either service touching a header.
+	// Payments publishes its own outbox backlog. Every service that holds an outbox reports
+	// it, so a single dashboard panel covers all of them and a stuck relay is visible
+	// wherever it is stuck.
+	if m, err := telemetry.NewMetrics("services/payments"); err == nil {
+		if err := m.ObserveOutboxPending("services/payments", relay.PendingCount); err != nil {
+			log.Error("outbox gauge unavailable", "error", err)
+		}
+	}
+
 	grpcServer := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	)
