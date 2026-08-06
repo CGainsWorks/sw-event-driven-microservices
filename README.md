@@ -174,6 +174,7 @@ it got no reply. Guessing there costs a double charge.
 | `tests/integration/` | Four services end to end: stock deducted, stock returned after a decline, refusal before any card is touched, no duplicate notifications | **15** |
 | `libs/idempotency/` | Against a real PostgreSQL: 8 concurrent claims on one key run the work **exactly once**, key reuse rejected, stale claims resumable | **8** |
 | `services/orders/…/core` | The compensation matrix: a forced failure at **each** saga step index, checked against the exact sequence of undo calls | **10** |
+| `libs/nodekit/` | The same idempotency contract against MongoDB — a different mechanism, so separately proven | **9** |
 | `contracts/` | Consumer-driven Pact contracts for the three Kafka pairs, verified against **155 real published events** | **6 + 6** |
 | `tests/chaos/` | The table above | **4** |
 
@@ -264,9 +265,6 @@ compose. Every item on the brief's build checklist is done.
   covered by a shared `.proto` plus `buf breaking` in CI, which is weaker in a specific way:
   it cannot say *which consumer* a change breaks. Spelled out in
   [`contracts/README.md`](contracts/README.md#4-the-grpc-gap-stated-plainly).
-- **Idempotency unit tests for the Node implementation.** The Go side is covered in
-  isolation; the Node side is proven only end to end, and its claim uses a different shape
-  that has not been checked against the same races.
 - **Metrics and logs pipelines.** Tracing only.
 
 **Known constraints of what is built:**

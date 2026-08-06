@@ -187,7 +187,8 @@ responses and on `StockReservationFailed` and `PaymentFailed` events.
 | `tests/integration` · `TestNotificationIsNotDuplicated` | Still one notification after the system settles |
 | `tests/integration` · `TestTransientFailureIsRetriedNotMemoised` | A transient provider failure is retried, not replayed |
 | `tests/chaos` · network partition | No duplicate payment after a 40s partition and recovery |
-| `libs/idempotency` · unit tests | **8 concurrent claims on one key run the work exactly once**, plus key reuse, clean retry after a rolled-back attempt, release-then-retry, stale-claim resume, and event redelivery |
+| `libs/idempotency` · unit tests (Go) | **8 concurrent claims on one key run the work exactly once**, plus key reuse, clean retry after a rolled-back attempt, release-then-retry, stale-claim resume, and event redelivery |
+| `libs/nodekit` · unit tests (Node) | The same nine properties against MongoDB, counting **committed** executions rather than invocations — `withTransaction` retries on write conflicts, so counting calls would make a correct implementation look broken |
 
 Responses carry a `deduplicated` flag purely so tests can prove deduplication *happened*
 rather than inferring it from state that would look identical either way.
@@ -203,10 +204,11 @@ rather than inferring it from state that would look identical either way.
 - **No pruning is implemented.** `idempotency_keys` grows without bound. The index on
   `created_at` exists for the sweep; the sweep does not.
 - **Resume is time-based**, with the assumption in §4.
-- **The Node implementation has no equivalent unit tests.** The Go side is covered in
-  isolation; the Node side is proven only end to end. Its claim is a single
-  aggregation-pipeline upsert, which does not have the Go version's insert-then-lock shape
-  and has therefore not been checked against the same races.
+- **No pruning is implemented** in either stack, as above.
+- **The two implementations are genuinely different mechanisms**, not one ported. They are
+  held to the same contract by two separate test suites rather than by shared code, and a
+  change to one does not force a change to the other. That is a maintenance cost, and it is
+  the price of the brief's polyglot requirement.
 
 ---
 

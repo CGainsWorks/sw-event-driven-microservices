@@ -217,6 +217,21 @@ jobs:
           SW_EDM_TEST_POSTGRES_DSN: postgres://orders:orders@localhost:55432/orders?sslmode=disable
         run: go test ./libs/... ./services/... -count=1 -v
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Node database-backed unit tests
+        # The Node idempotency implementation is a DIFFERENT mechanism from the Go one — a
+        # single aggregation-pipeline upsert rather than insert-then-lock — so the Go tests
+        # passing says nothing about it. Same contract, separately proven.
+        env:
+          SW_EDM_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0&directConnection=true
+        run: |
+          npm ci --no-audit --no-fund
+          npm test --workspace @sw-edm/nodekit
+
       - name: Integration tests
         run: go test -tags=integration ./tests/integration/... -count=1 -v
 
