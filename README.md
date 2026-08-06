@@ -173,6 +173,7 @@ it got no reply. Guessing there costs a double charge.
 | `events/` | Schemas compile, golden samples validate, must-be-rejected cases are rejected *at the expected pointer*, and `schemas/`, `topics.yml` and `registry/config.yml` agree | **49** |
 | `tests/integration/` | Four services end to end: stock deducted, stock returned after a decline, refusal before any card is touched, no duplicate notifications | **15** |
 | `libs/idempotency/` | Against a real PostgreSQL: 8 concurrent claims on one key run the work **exactly once**, key reuse rejected, stale claims resumable | **8** |
+| `services/orders/…/core` | The compensation matrix: a forced failure at **each** saga step index, checked against the exact sequence of undo calls | **10** |
 | `contracts/` | Consumer-driven Pact contracts for the three Kafka pairs, verified against **155 real published events** | **6 + 6** |
 | `tests/chaos/` | The table above | **4** |
 
@@ -252,8 +253,9 @@ Stated plainly, because a README that lists only what works is a brochure.
 
 **Built and demonstrated:** four services, the full four-step saga with compensation,
 transactional outbox, idempotency in both stacks, schema-governed events validated at
-runtime on every publish, end-to-end tracing, the four failure scenarios above, and a kind
-deployment that passes the same integration suite as compose.
+runtime on every publish, end-to-end tracing, the four failure scenarios above, the full
+compensation matrix, and a kind deployment that passes the same integration suite as
+compose. Every item on the brief's build checklist is done.
 
 **Not built yet:**
 
@@ -262,9 +264,6 @@ deployment that passes the same integration suite as compose.
   covered by a shared `.proto` plus `buf breaking` in CI, which is weaker in a specific way:
   it cannot say *which consumer* a change breaks. Spelled out in
   [`contracts/README.md`](contracts/README.md#4-the-grpc-gap-stated-plainly).
-- **A test that forces failure at each saga step index.** Steps 0 and 1 are covered by the
-  integration and chaos suites; failure at `capture_payment` and `commit_reservation` — the
-  expensive paths that produce a refund — are not yet exercised by a test.
 - **Idempotency unit tests for the Node implementation.** The Go side is covered in
   isolation; the Node side is proven only end to end, and its claim uses a different shape
   that has not been checked against the same races.

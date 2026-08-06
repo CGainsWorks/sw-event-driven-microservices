@@ -208,9 +208,14 @@ jobs:
         # atomicity of the claim, the row lock a concurrent duplicate waits on, and the
         # visibility rules that decide what the loser of that race sees. A fake would test
         # the wrapper and skip every part that can actually be wrong.
+        #
+        # The saga tests are here for the same reason and one more: they run in a throwaway
+        # PostgreSQL schema, because the orders service running against the same database
+        # has a recovery loop that would find their sagas and advance them with the real
+        # ports — a race that would make every assertion intermittent.
         env:
           SW_EDM_TEST_POSTGRES_DSN: postgres://orders:orders@localhost:55432/orders?sslmode=disable
-        run: go test ./libs/... -count=1 -v
+        run: go test ./libs/... ./services/... -count=1 -v
 
       - name: Integration tests
         run: go test -tags=integration ./tests/integration/... -count=1 -v

@@ -156,6 +156,31 @@ Only a failure at the last step is visible to the customer as anything other tha
 cancellation. That is the cost of `capture_payment` preceding `commit_reservation`, and it
 is why the reservation TTL is set generously — see §5.
 
+### The matrix is tested, not just asserted
+
+`services/orders/internal/core/saga_test.go` forces a terminal failure at **each** step
+index and checks the exact sequence of calls the engine made:
+
+```
+every step succeeds   reserve  authorize  capture  commit
+fails at step 0       reserve                                          ← nothing to undo
+fails at step 1       reserve  authorize                      release
+fails at step 2       reserve  authorize  capture       void  release
+fails at step 3       reserve  authorize  capture  commit  refund  void  release
+```
+
+Scripted ports rather than the real services, deliberately. Failure at `capture_payment` or
+`commit_reservation` is very hard to provoke through the running system — you would have to
+make a provider fail *only* on capture, or expire a reservation inside the window between
+capture and commit — and any test that tried would be timing-dependent and flaky. What is
+under test here is the engine's logic, so the failure is scripted and the assertion is
+exact.
+
+The same file also pins the properties that are easy to regress: a **retryable** failure
+must not compensate, an **ambiguous** outcome must reach `UNKNOWN` and never `FAILED`, a
+failed compensation must leave the saga `STUCK` and the order **not** reported as cancelled,
+and re-advancing a completed saga must make no further calls.
+
 ---
 
 ## 4. A timeout is not an outcome
