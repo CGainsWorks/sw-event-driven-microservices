@@ -31,8 +31,9 @@ proto/gen/
 # test, not the pact: a stale pact that looks authoritative is worse than no pact, because
 # it would let a provider "pass" against expectations a consumer stopped having.
 #
-# Matched anywhere rather than at one fixed path — a misconfigured dir in a test writes
-# them somewhere unexpected, and the first sign of it is a generated artefact in a commit.
+# Matched anywhere rather than at one fixed path, not just contracts/pacts: a misconfigured
+# dir in a test writes them somewhere unexpected, and the first sign of that should not be
+# a generated artefact appearing in a diff.
 **/pacts/
 **/pact-logs/
 contracts/logs/
