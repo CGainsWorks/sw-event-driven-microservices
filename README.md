@@ -60,16 +60,19 @@ Then look at what it did:
 | **<http://localhost:16686>** | Jaeger — search `sw_edm.order_id=<the id it printed>` for one trace across all four services |
 | **<http://localhost:9090>** | Prometheus, if you want to write your own query |
 
-Both open straight on something useful; there is no login and no setup step.
+Grafana and Jaeger both open straight on something useful — no login, no setup step, and
+the dashboard is provisioned from a file in this repository rather than clicked together.
 
 <details>
 <summary>Other commands</summary>
 
 ```bash
 make up               # just start everything
-make test             # event contract tests + Go unit tests
+make test             # event contract + Go unit tests (hermetic, no stack needed)
 make test-integration # 15 tests against a running stack
+make contracts        # generate consumer pacts, then verify providers
 make chaos            # failure injection (DESTRUCTIVE — stops containers, cuts networks)
+make kind-up          # deploy to a local kind cluster instead
 make down             # stop and remove volumes
 ```
 
