@@ -128,6 +128,19 @@ jobs:
       - name: Install
         run: npm ci --no-audit --no-fund
 
+      - name: Install the Pact protobuf plugin
+        # The gRPC contracts need it. Downloaded and checksum-verified rather than trusted:
+        # this is a binary that runs during the build.
+        run: |
+          set -euo pipefail
+          BASE=https://github.com/pact-foundation/pact-plugins/releases/download/pact-plugin-cli-v0.2.0
+          curl -fsSL "$BASE/pact-plugin-linux-x86_64.gz" -o cli.gz
+          curl -fsSL "$BASE/pact-plugin-linux-x86_64.gz.sha256" -o cli.gz.sha256
+          echo "$(cut -d' ' -f1 cli.gz.sha256)  cli.gz" | sha256sum -c -
+          gunzip cli.gz && chmod +x cli
+          ./cli install -y https://github.com/pactflow/pact-protobuf-plugin/releases/tag/v-0.8.0
+          ./cli list installed
+
       - name: Tests
         # Includes the Pact CONSUMER tests, which need nothing running: they verify the real
         # notifications handler against the contract and emit the pact files. Provider
@@ -241,11 +254,19 @@ jobs:
           name: pacts
           path: contracts/pacts/
 
-      - name: Verify providers against the contracts
+      - name: Verify message providers against the contracts
         # Checks the events the producers ACTUALLY publish to Kafka against what
         # notifications says it needs — not against a provider-state function written for
         # the test, which is one more thing that could drift from the real producer.
         run: go test -tags=contract ./tests/contract/... -count=1 -v
+
+      - name: Verify gRPC providers against the contracts
+        # Replays each consumer expectation against the live gRPC server. Provider states
+        # reset both the stock AND the idempotency key — see contracts/README.md §4 for why
+        # the second is not optional.
+        env:
+          PACT_DO_NOT_TRACK: "true"
+        run: npm test --workspace @sw-edm/contracts
 
       - name: Logs on failure
         if: failure()

@@ -175,7 +175,7 @@ it got no reply. Guessing there costs a double charge.
 | `libs/idempotency/` | Against a real PostgreSQL: 8 concurrent claims on one key run the work **exactly once**, key reuse rejected, stale claims resumable | **8** |
 | `services/orders/…/core` | The compensation matrix: a forced failure at **each** saga step index, checked against the exact sequence of undo calls | **10** |
 | `libs/nodekit/` | The same idempotency contract against MongoDB — a different mechanism, so separately proven | **9** |
-| `contracts/` | Consumer-driven Pact contracts for the three Kafka pairs, verified against **155 real published events** | **6 + 6** |
+| `contracts/` | Consumer-driven Pact for **all five interacting pairs** — three Kafka, verified against 155 real published events; two gRPC, verified against the live servers | **10 + 8** |
 | `tests/chaos/` | The table above | **4** |
 
 ---
@@ -260,12 +260,10 @@ compose. Every item on the brief's build checklist is done.
 
 **Not built yet:**
 
-- **Pact for the two gRPC pairs.** The three Kafka pairs have consumer-driven contracts,
-  verified against real published events. `orders → payments` and `orders → inventory` are
-  covered by a shared `.proto` plus `buf breaking` in CI, which is weaker in a specific way:
-  it cannot say *which consumer* a change breaks. Spelled out in
-  [`contracts/README.md`](contracts/README.md#4-the-grpc-gap-stated-plainly).
-- **Metrics and logs pipelines.** Tracing only.
+- **Metrics and logs pipelines.** Tracing only. The collector config has one pipeline and
+  adding the others is deliberate future work rather than something half-done.
+- **No Pact Broker.** Pacts move between CI jobs as an artifact, so there is no versioning
+  and no `can-i-deploy`.
 
 **Known constraints of what is built:**
 

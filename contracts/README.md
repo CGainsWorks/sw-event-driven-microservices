@@ -13,15 +13,22 @@ go test -tags=contract ./tests/contract/...  # 3. providers are verified
 
 ## What is covered
 
-| Pair | Transport | Covered by |
-|---|---|---|
-| orders → notifications | Kafka | **Pact message contract** |
-| payments → notifications | Kafka | **Pact message contract** |
-| inventory → notifications | Kafka | **Pact message contract** |
-| orders → payments | gRPC | shared `.proto` + `buf breaking` in CI + integration tests |
-| orders → inventory | gRPC | shared `.proto` + `buf breaking` in CI + integration tests |
+| Pair | Transport | Contract | Provider verified against |
+|---|---|---|---|
+| orders → notifications | Kafka | message pact | real published events |
+| payments → notifications | Kafka | message pact | real published events |
+| inventory → notifications | Kafka | message pact | real published events |
+| orders → payments | gRPC | protobuf plugin | the live gRPC server |
+| orders → inventory | gRPC | protobuf plugin | the live gRPC server |
 
-The gRPC pairs are **not** covered by Pact. That is a real gap and §4 says what it costs.
+**Every pair that interacts has a contract**, and every contract is verified against the
+real provider rather than a stand-in.
+
+The gRPC contracts need Pact's protobuf plugin:
+
+```bash
+pact-plugin-cli install -y https://github.com/pactflow/pact-protobuf-plugin/releases/tag/v-0.8.0
+```
 
 ---
 
@@ -97,9 +104,55 @@ to have been run first, which the Go test says explicitly when the directory is 
 
 ---
 
-## 4. The gRPC gap, stated plainly
+## 4. The gRPC contracts, and what they add over `buf`
 
-The two gRPC pairs are not Pact-tested. Pact's protobuf/gRPC support needs the
+The shared `.proto` and `buf breaking` in CI already stop a field being removed or renamed.
+So what do the gRPC pacts add?
+
+**Consumer-driven granularity.** Buf can say "this change breaks *someone*". Pact says
+"this breaks *orders*, which needs `reservation_id` on a refusal". Only the second lets a
+provider drop a field it can prove nobody uses.
+
+Two expectations in `consumer/orders-grpc.pact.test.mjs` are exactly that shape — true of
+the system, invisible to the schema:
+
+- **`reservation_id` is populated even when a reservation is REFUSED.** Inventory allocates
+  the id and records a `FAILED` reservation before answering, so a retry returns the same
+  refusal instead of re-running the availability check against stock that has since changed.
+  If inventory stopped doing that, the proto would be unchanged and buf silent.
+- **`retryable` is published by payments rather than derived by orders** from the failure
+  code. Two copies of that mapping would drift, and drift means either a saga that gives up
+  on a transient failure or one that retries a decline forever.
+
+### Request expectations are complete; response expectations are minimal
+
+The plugin rejects any request field the client sends that the interaction does not declare.
+That asymmetry is right: on the **request** side an expectation is a *promise* about what
+the consumer will send, so completeness is the correct default. On the **response** side it
+is a *demand*, so naming only what is read keeps the provider free to change the rest.
+
+### Idempotency and replayed contracts do not compose for free
+
+The genuinely surprising thing here, found by running it.
+
+A Pact interaction pins the idempotency key to a fixed example value, so **every
+verification run sends the same key** — and the second run receives the first run's
+memoised answer instead of exercising the provider. Worse, whatever the first run produced
+is then frozen: the refusal case first verified against plentiful stock, recorded
+"reserved" under that key, and replayed it forever regardless of what stock said.
+
+So the provider state resets the key as well as the stock, through
+`DELETE /admin/reservations?idempotency_key=…`. An idempotent provider and a replayed
+contract interaction need that, and nothing warns you.
+
+Payments needs no state handler at all: its outcomes are driven entirely by the
+`payment_method_token` in the request, so each interaction carries its own setup — a
+property of the simulated PSP being deterministic, and part of why it was built that way.
+
+<details>
+<summary>What this looked like before the plugin was set up</summary>
+
+The two gRPC pairs were not Pact-tested. Pact's protobuf/gRPC support needs the
 [protobuf plugin](https://github.com/pactflow/pact-protobuf-plugin), a separate binary
 installed through `pact-plugin-cli`. It was not set up here.
 
@@ -126,14 +179,24 @@ Adding it means installing the plugin, describing each RPC's request and respons
 interaction, and running verification against a live gRPC server. It is a bounded piece of
 work and it is not done.
 
+*— which is what the previous version of this file said. It has since been done, and the
+section above describes what it turned out to involve. Kept because the reasoning for what
+buf does and does not give you is the same either way.*
+
+</details>
+
 ---
 
 ## 5. Limitations
 
 - **No Pact Broker**, so no versioning and no `can-i-deploy` — §3.
-- **The gRPC pairs are not Pact-tested** — §4.
-- **Provider verification needs the stack running**, so it is build-tagged and outside CI's
-  default path. It is slower than a real Pact verification and depends on real Kafka.
+- **Provider verification needs the stack running.** The message verification is
+  build-tagged and outside CI's default path; the gRPC verification skips itself when the
+  services are unreachable.
+- **The gRPC contracts cover the two RPCs the saga's outcome turns on** — `ReserveStock` and
+  `AuthorizePayment`, in both their success and refusal forms. `CapturePayment`,
+  `CommitReservation` and the compensating RPCs are not described as pacts; they are covered
+  by the shared `.proto`, `buf breaking`, and the compensation-matrix tests.
 - **The matcher evaluator implements a subset** of the Pact spec: `regex`, `type` and exact
   equality. That is everything these contracts use, and it refuses anything else rather than
   passing it.

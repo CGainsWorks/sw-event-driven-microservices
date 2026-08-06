@@ -14,6 +14,8 @@
     "@pact-foundation/pact": "15.0.1"
   },
   "dependencies": {
+    "@grpc/grpc-js": "1.14.1",
+    "@grpc/proto-loader": "0.8.0",
     "@sw-edm/events": "1.0.0",
     "@sw-edm/nodekit": "1.0.0"
   },

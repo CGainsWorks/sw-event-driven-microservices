@@ -18,7 +18,9 @@ import {
 } from '@sw-edm/nodekit';
 import { schemaValidators } from '@sw-edm/nodekit';
 
-import { InventoryService, ensureIndexes, STOCK } from './core.mjs';
+import { idempotency } from '@sw-edm/nodekit';
+
+import { InventoryService, ensureIndexes, STOCK, RESERVATIONS } from './core.mjs';
 import { buildServer } from './grpc.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -206,6 +208,43 @@ function httpHandler(service, relay, db, log) {
         }
         log.warn('stock levels set through the admin endpoint', { skus: items.map((i) => i.sku) });
         return json(200, { updated: items.length });
+      }
+
+      // Test and demo affordance: forget an idempotency key and the reservation it made.
+      //
+      // This exists because contract verification and idempotency interact in a way that is
+      // easy to miss. A Pact interaction pins the idempotency key to a fixed example value,
+      // so every verification run sends the SAME key — and the second run gets the first
+      // run's memoised answer rather than exercising the provider at all. Worse, whatever
+      // the first run happened to produce is then frozen: a refusal case verified once
+      // against plentiful stock will replay "reserved" forever.
+      //
+      // So the provider state resets the key before the interaction runs. Like /admin/stock
+      // this is not an operational API and would not exist in a real deployment.
+      if (req.method === 'DELETE' && url.pathname === '/admin/reservations') {
+        const key = url.searchParams.get('idempotency_key');
+        if (!key) return json(400, { error: 'idempotency_key is required' });
+
+        const reservations = await db.collection(RESERVATIONS)
+          .find({ idempotency_key: key }).toArray();
+        await db.collection(RESERVATIONS).deleteMany({ idempotency_key: key });
+
+        // Every scope that could hold this key. Scoped keys namespace the key space, so a
+        // reserve and a commit with the same key are separate records.
+        const scopes = [
+          idempotency.Scope.ReserveStock,
+          idempotency.Scope.ReleaseStock,
+          idempotency.Scope.CommitReservation,
+        ];
+        await db.collection(idempotency.COLLECTION).deleteMany({
+          _id: { $in: scopes.map((s) => `${s}:${key}`) },
+        });
+
+        log.warn('reservation and idempotency key cleared through the admin endpoint', {
+          idempotency_key: key,
+          reservations_removed: reservations.length,
+        });
+        return json(200, { removed: reservations.length });
       }
 
       return json(404, { error: 'not_found' });
