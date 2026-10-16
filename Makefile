@@ -51,6 +51,15 @@ tools: ## Install pinned code generation tools into GOPATH/bin
 proto: ## Regenerate Go code from proto/
 	cd proto && buf generate
 
+.PHONY: proto-docker
+proto-docker: ## Regenerate Go code from proto/ inside Docker, with no local buf or plugins
+	rm -rf proto/gen
+	docker build -f services/Dockerfile --target protogen-out \
+		--build-arg BUF_VERSION=$(BUF_VERSION:v%=%) \
+		--build-arg PROTOC_GEN_GO_VERSION=$(PROTOC_GEN_GO_VERSION) \
+		--build-arg PROTOC_GEN_GO_GRPC_VERSION=$(PROTOC_GEN_GO_GRPC_VERSION) \
+		--output type=local,dest=proto/gen .
+
 .PHONY: proto-lint
 proto-lint: ## Lint the protobuf definitions
 	cd proto && buf lint

@@ -1,0 +1,9 @@
+# Generated code is produced inside the image (see services/Dockerfile), so a local copy
+# must never reach the build context: it could be stale and would shadow the real thing.
+proto/gen/
+
+# Large, host-specific and never needed: the Node image installs its own dependencies.
+**/node_modules/
+
+# The Go build stamps VCS details when it sees .git, and the build image has no git.
+.git/

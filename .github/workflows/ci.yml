@@ -194,7 +194,15 @@ jobs:
           cache: true
 
       - name: Bring the stack up
+        # Generates proto/gen inside the image build, exactly as a fresh clone does with
+        # `make up` or `make demo`. No buf on this runner, so an image that quietly relied
+        # on generated code left lying around would fail here.
         run: docker compose up -d --build
+
+      - name: Generate protobuf code for the host-side tests
+        # The Go tests below compile the services on the runner, so they need proto/gen
+        # too. Exported from the same Docker stage the images used, from its warm cache.
+        run: make proto-docker
 
       - name: Wait for readiness
         run: |

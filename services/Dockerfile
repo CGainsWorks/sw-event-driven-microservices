@@ -8,10 +8,36 @@
 # Build context is the repository root, because this is a single Go module and the service
 # depends on libs/, proto/gen/ and events/.
 #
-#   docker build -f services/Dockerfile.go --build-arg SERVICE=orders .
+#   docker build -f services/Dockerfile --build-arg SERVICE=orders .
+#
+# proto/gen/ is not committed, so the image generates it in its own stage below. That is
+# what lets `docker compose up --build` work from a fresh clone with no local buf. The same
+# stage is exported to the host by `make proto-docker`.
 
 ARG GO_VERSION=1.26
 
+# Codegen versions. Keep these in step with the pins in the Makefile and in CI.
+ARG BUF_VERSION=1.58.0
+
+FROM bufbuild/buf:${BUF_VERSION} AS buf
+
+# --- generated protobuf code ------------------------------------------------
+FROM golang:${GO_VERSION}-alpine AS protogen
+ARG PROTOC_GEN_GO_VERSION=v1.36.10
+ARG PROTOC_GEN_GO_GRPC_VERSION=v1.5.1
+COPY --from=buf /usr/local/bin/buf /usr/local/bin/buf
+# Plugins before the .proto files, so editing a contract does not reinstall them.
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION} \
+ && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}
+WORKDIR /src/proto
+COPY proto/ ./
+RUN rm -rf gen && buf generate
+
+# Just the generated tree, for `docker build --target protogen-out --output ...`.
+FROM scratch AS protogen-out
+COPY --from=protogen /src/proto/gen /
+
+# --- service binary ---------------------------------------------------------
 FROM golang:${GO_VERSION}-alpine AS build
 ARG SERVICE
 WORKDIR /src
@@ -22,6 +48,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+# Always the freshly generated code, never whatever happens to be in the build context.
+# .dockerignore keeps a local proto/gen/ out of the context so nothing stale survives.
+COPY --from=protogen /src/proto/gen ./proto/gen
 
 # Fail loudly rather than producing an image for a service that does not exist.
 RUN test -n "${SERVICE}" || (echo "SERVICE build arg is required" && exit 1)
