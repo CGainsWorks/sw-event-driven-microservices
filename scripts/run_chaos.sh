@@ -7,9 +7,10 @@
 # restores everything afterwards, including when a scenario fails, but anything else using
 # the stack will be disrupted while it runs.
 #
-# Results are written to tests/chaos/results/chaos-results.json. Every number the README
-# quotes about failure behaviour comes from that file, which is why it is generated rather
-# than typed.
+# Results are written to tests/chaos/results/chaos-results.json (gitignored) and copied to
+# docs/chaos-results.json, which is committed. Every number the README quotes about failure
+# behaviour comes from that file, and tests/chaos/summary_test.go checks the README against
+# it on every push.
 
 set -euo pipefail
 
@@ -52,6 +53,10 @@ if [ -f "$RESULTS" ]; then
     else
         cat "$RESULTS"
     fi
+    cp "$RESULTS" docs/chaos-results.json
+    echo
+    echo "  Copied to docs/chaos-results.json. Commit it, and update the README table if a"
+    echo "  figure moved (go test ./tests/chaos/ says which)."
 else
     fail "no results file was written; the suite did not reach the end"
 fi

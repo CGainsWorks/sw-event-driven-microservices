@@ -5,5 +5,5 @@
 #
 #     make chaos
 #
-# Every number the README quotes about failure behaviour is read from the file this
-# directory holds after that command runs.
+# That command also copies the result to docs/chaos-results.json, which IS committed and
+# is the file every number the README quotes about failure behaviour comes from.
