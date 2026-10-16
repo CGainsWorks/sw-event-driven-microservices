@@ -37,7 +37,7 @@ graph TB
 
 **Solid arrows are synchronous commands. Dotted arrows are asynchronous facts.** Every
 service owns its own database and nothing reads another's. Nothing publishes to Kafka
-directly — everything goes through a transactional outbox.
+directly: everything goes through a transactional outbox.
 
 ---
 
@@ -56,11 +56,11 @@ Then look at what it did:
 
 | | |
 |---|---|
-| **<http://localhost:3000>** | Grafana — orders by outcome, why they were cancelled, saga step outcomes and durations, outbox backlog, stuck sagas |
-| **<http://localhost:16686>** | Jaeger — search `sw_edm.order_id=<the id it printed>` for one trace across all four services |
+| **<http://localhost:3000>** | Grafana: orders by outcome, why they were cancelled, saga step outcomes and durations, outbox backlog, stuck sagas |
+| **<http://localhost:16686>** | Jaeger: search `sw_edm.order_id=<the id it printed>` for one trace across all four services |
 | **<http://localhost:9090>** | Prometheus, if you want to write your own query |
 
-Grafana and Jaeger both open straight on something useful — no login, no setup step, and
+Grafana and Jaeger both open straight on something useful: no login, no setup step, and
 the dashboard is provisioned from a file in this repository rather than clicked together.
 
 <details>
@@ -71,12 +71,12 @@ make up               # just start everything
 make test             # event contract + Go unit tests (hermetic, no stack needed)
 make test-integration # 15 tests against a running stack
 make contracts        # generate consumer pacts, then verify providers
-make chaos            # failure injection (DESTRUCTIVE — stops containers, cuts networks)
+make chaos            # failure injection (DESTRUCTIVE: stops containers, cuts networks)
 make kind-up          # deploy to a local kind cluster instead
 make down             # stop and remove volumes
 ```
 
-Requires Docker, Go 1.26+, Node 20+, `curl` and `jq`. Run `make check-tools` first — it
+Requires Docker, Go 1.26+, Node 20+, `curl` and `jq`. Run `make check-tools` first; it
 names exactly what is missing rather than failing halfway through a build.
 
 </details>
@@ -89,7 +89,7 @@ make kind-down
 ```
 
 Same images, no registry. The NodePorts match the compose host ports, so **the integration
-suite runs against the cluster unchanged** — which is how it was verified:
+suite runs against the cluster unchanged**, which is how it was verified:
 
 ```
 $ go test -tags=integration ./tests/integration/... -count=1
@@ -127,11 +127,11 @@ Full reasoning: [`docs/sagas.md`](docs/sagas.md).
 ### A timeout is not an outcome
 
 If `AuthorizePayment` times out, orders does not know whether the payment happened. Both
-guesses are wrong some of the time — assume failure and you leak a hold on someone's card;
+guesses are wrong some of the time: assume failure and you leak a hold on someone's card;
 assume success and you confirm an unpaid order.
 
 So the saga records **`UNKNOWN`**, never `FAILED`, and resolves it by *asking*:
-`GetPaymentByIdempotencyKey` with the same key it sent. `found=false` is a real answer — it
+`GetPaymentByIdempotencyKey` with the same key it sent. `found=false` is a real answer: it
 means the request never arrived and is safe to send again. If it cannot even ask, the step
 stays `UNKNOWN` and is retried. **It is never forced to a conclusion.**
 
@@ -149,7 +149,7 @@ The system does **not** claim exactly-once delivery, and nothing here says other
 
 ### Compensation is not rollback
 
-A refunded payment is not an un-happened payment — it leaves a trace on the customer's
+A refunded payment is not an un-happened payment: it leaves a trace on the customer's
 statement and two entries in the ledger, forever. The domain is built on that: reservations
 and authorizations exist precisely because both have a reversible first phase.
 
@@ -158,8 +158,11 @@ and authorizations exist precisely because both have a reversible first phase.
 ## Does it actually work?
 
 `make chaos` stops containers, severs docker networks and republishes real messages. Every
-figure below is read from `tests/chaos/results/chaos-results.json`, which that command
-generates — no number in this README was typed by hand.
+figure below comes from [`docs/chaos-results.json`](docs/chaos-results.json), the committed
+output of that command, from the run at 2026-08-06T20:37:36Z. `make chaos` refreshes the file,
+and `tests/chaos/summary_test.go` (run on every push) fails if a figure in this table differs
+from it or if any recorded scenario did not pass. The scenarios themselves need a live stack,
+so CI does not rerun them.
 
 | Injected failure | Property proven | Measured |
 |---|---|---|
@@ -169,7 +172,7 @@ generates — no number in this README was typed by hand.
 | **payments partitioned, 40s** | A hung call is never mistaken for a decline | **0** wrongly cancelled, **0** duplicate payments |
 
 The first row is the one worth reading twice. **A total broker outage delays the customer's
-email and nothing else** — because the saga runs over gRPC and the events wait safely in the
+email and nothing else**, because the saga runs over gRPC and the events wait safely in the
 outbox. That is what the outbox is for, and it is demonstrated rather than claimed.
 
 The last row is why the ambiguous-outcome handling exists. A stopped service refuses
@@ -184,9 +187,10 @@ it got no reply. Guessing there costs a double charge.
 | `tests/integration/` | Four services end to end: stock deducted, stock returned after a decline, refusal before any card is touched, no duplicate notifications | **15** |
 | `libs/idempotency/` | Against a real PostgreSQL: 8 concurrent claims on one key run the work **exactly once**, key reuse rejected, stale claims resumable | **8** |
 | `services/orders/…/core` | The compensation matrix: a forced failure at **each** saga step index, checked against the exact sequence of undo calls | **10** |
-| `libs/nodekit/` | The same idempotency contract against MongoDB — a different mechanism, so separately proven | **9** |
-| `contracts/` | Consumer-driven Pact for **all five interacting pairs** — three Kafka, verified against 155 real published events; two gRPC, verified against the live servers | **10 + 8** |
-| `tests/chaos/` | The table above | **4** |
+| `libs/nodekit/` | The same idempotency contract against MongoDB: a different mechanism, so separately proven | **9** |
+| `contracts/` | Consumer-driven Pact for **all five interacting pairs**: three Kafka, verified against 155 real published events; two gRPC, verified against the live servers | **10 + 8** |
+| `tests/chaos/` | The table above, run by `make chaos` against a live stack; `summary_test.go` checks the table against `docs/chaos-results.json` on every push | **4 + 1** |
+| `services/payments/internal/psp/` | The Stripe test-mode adapter: request shape, status and error mapping against recorded responses, and every request validated by stripe-mock | **8** |
 
 ---
 
@@ -229,7 +233,7 @@ services/
   orders/         Go     HTTP API, saga orchestrator, recovery loop
   payments/       Go     gRPC, append-only ledger, simulated PSP
   inventory/      Node   gRPC, conditional stock updates, expiry sweeper
-  notifications/  Node   Kafka consumers only — calls nobody
+  notifications/  Node   Kafka consumers only: calls nobody
 libs/
   eventbus/ outbox/ idempotency/ telemetry/ platform/ pgmigrate/    Go
   nodekit/                                                          Node
@@ -274,14 +278,20 @@ compose. Every item on the brief's build checklist is done.
   stdout for whatever collects them. Adding a third pipeline is bounded work, not done.
 - **No Pact Broker.** Pacts move between CI jobs as an artifact, so there is no versioning
   and no `can-i-deploy`.
-- **No alerting rules.** The dashboard shows what would be alerted on — stuck sagas,
-  unresolved step outcomes, a backlog that stops falling — but nothing fires.
+- **No alerting rules.** The dashboard shows what would be alerted on (stuck sagas,
+  unresolved step outcomes, a backlog that stops falling), but nothing fires.
 
 **Known constraints of what is built:**
 
-- **The PSP is simulated.** `services/payments/internal/psp` is a stand-in whose behaviour is
-  chosen by the payment token, so every failure path is reachable from a test. It is not a
-  real integration and is not presented as one.
+- **The PSP is simulated by default.** `services/payments/internal/psp/psp.go` is a
+  simulator whose behaviour is chosen by the payment token, so every failure path is
+  reachable from a test. The service logs which provider it uses at startup. A Stripe
+  adapter of the same shape (`stripe.go`, `PSP_PROVIDER=stripe`) accepts test-mode keys
+  only and is exercised in CI against
+  [stripe-mock](https://github.com/stripe/stripe-mock) `v0.197.0`, which validates each
+  request against Stripe's OpenAPI spec but returns canned objects. No real Stripe account
+  has been used, the compose stack and the saga tests run on the simulator, and declines,
+  3-D Secure and webhooks have not been exercised against real Stripe.
 - **The email sender writes to a log.** "Sent" means "handed over", not "read".
 - **gzip, not zstd.** kafkajs has no zstd decoder, so the codec is the intersection of what
   both client libraries support. The concrete price of a polyglot estate; written up in

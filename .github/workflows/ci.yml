@@ -26,6 +26,7 @@ jobs:
   contract:
     name: Contract
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -68,6 +69,16 @@ jobs:
   go:
     name: Go
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # Stripe's official mock server. The Stripe test-mode adapter sends every request it
+      # can make to it, and stripe-mock validates each one against Stripe's OpenAPI spec.
+      stripe-mock:
+        image: stripe/stripe-mock:v0.197.0
+        ports:
+          - 12111:12111
+    env:
+      SW_EDM_STRIPE_MOCK_URL: http://localhost:12111
     steps:
       - uses: actions/checkout@v5
 
@@ -117,6 +128,7 @@ jobs:
   node:
     name: Node
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
