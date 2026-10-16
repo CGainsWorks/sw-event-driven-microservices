@@ -109,7 +109,14 @@ func run() error {
 		}
 	}()
 
-	svc := core.NewService(pool, psp.NewSimulator(), log, authTTL)
+	// The simulator unless PSP_PROVIDER says otherwise; stripe is test mode only.
+	provider, providerName, err := psp.FromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	log.Info("payment provider", "psp", providerName)
+
+	svc := core.NewService(pool, provider, log, authTTL)
 	relay := outbox.NewRelay(pool, producer, log, outbox.RelayConfig{
 		PollInterval: platform.EnvDuration("OUTBOX_POLL_INTERVAL", 250*time.Millisecond),
 		BatchSize:    platform.EnvInt("OUTBOX_BATCH_SIZE", 100),

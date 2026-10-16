@@ -15,8 +15,9 @@
 //	pm_flaky_<n>         fails <n> times with PSP_UNAVAILABLE, then succeeds
 //	anything else        success
 //
-// A real adapter would go here unchanged in shape: same interface, same error taxonomy.
-// What it would not have is deterministic control, which is why the tests target this one.
+// It is the default (PSP_PROVIDER=simulator). stripe.go is a real adapter of the same shape,
+// for Stripe in test mode only, exercised in CI against stripe-mock. What a real provider
+// lacks is deterministic control over every failure, which is why the tests target this one.
 package psp
 
 import (
